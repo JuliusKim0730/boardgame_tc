@@ -1,10 +1,18 @@
 import { Router } from 'express';
 import { RoomService } from '../services/RoomService';
 import { GameSetupService } from '../services/GameSetupService';
+import { Server } from 'socket.io';
+import { pool } from '../db/pool';
 
 const router = Router();
 const roomService = new RoomService();
 const setupService = new GameSetupService();
+
+let io: Server;
+
+export function setSocketIO(socketIO: Server) {
+  io = socketIO;
+}
 
 // 방 생성
 router.post('/rooms', async (req, res) => {
@@ -53,6 +61,29 @@ router.post('/rooms/:roomId/start', async (req, res) => {
   try {
     const { roomId } = req.params;
     const gameId = await setupService.setupGame(roomId);
+    
+    // 게임 상태 조회
+    const client = await pool.connect();
+    try {
+      const gameResult = await client.query(
+        'SELECT current_turn_player_id FROM games WHERE id = $1',
+        [gameId]
+      );
+      
+      const firstPlayerId = gameResult.rows[0].current_turn_player_id;
+      
+      // WebSocket으로 게임 시작 및 첫 턴 알림
+      if (io) {
+        io.to(roomId).emit('game-started', { gameId });
+        io.to(roomId).emit('turn-started', { 
+          playerId: firstPlayerId,
+          day: 1
+        });
+      }
+    } finally {
+      client.release();
+    }
+    
     res.json({ gameId });
   } catch (error: any) {
     res.status(400).json({ error: error.message });

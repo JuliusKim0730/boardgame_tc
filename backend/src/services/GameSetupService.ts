@@ -89,6 +89,18 @@ export class GameSetupService {
         ['in_progress', roomId]
       );
       
+      // 첫 턴 시작 (선플레이어)
+      const firstPlayerId = shuffledPlayers[0].id;
+      const firstPlayerStateResult = await client.query(
+        'SELECT id FROM player_states WHERE game_id = $1 AND player_id = $2',
+        [gameId, firstPlayerId]
+      );
+      
+      await client.query(
+        'INSERT INTO turns (game_id, day, player_state_id, started_at) VALUES ($1, $2, $3, NOW())',
+        [gameId, 1, firstPlayerStateResult.rows[0].id]
+      );
+      
       await client.query('COMMIT');
       return gameId;
     } catch (error) {

@@ -1,7 +1,13 @@
 import { pool } from '../db/pool';
 import { turnManager } from './TurnManager';
+import { Server } from 'socket.io';
 
 export class TurnService {
+  private io: Server | null = null;
+
+  setSocketIO(io: Server) {
+    this.io = io;
+  }
   // 결심 토큰 회복 체크 (7일차 시작 시)
   async checkResolveTokenRecovery(gameId: string): Promise<void> {
     const client = await pool.connect();
@@ -178,6 +184,22 @@ export class TurnService {
       );
       
       await client.query('COMMIT');
+      
+      // 상태 업데이트 브로드캐스트
+      if (this.io) {
+        const roomResult = await client.query(
+          'SELECT room_id FROM games WHERE id = $1',
+          [gameId]
+        );
+        const roomId = roomResult.rows[0].room_id;
+        
+        this.io.to(roomId).emit('state-updated', {
+          playerId,
+          actionType,
+          result
+        });
+      }
+      
       return result;
     } catch (error) {
       await client.query('ROLLBACK');

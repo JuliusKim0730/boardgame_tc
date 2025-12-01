@@ -43,6 +43,12 @@ chanceService.setSocketIO(io);
 // WebSocket 설정
 setupGameSocket(io);
 
+// 라우트에 Socket.IO 전달
+import { setSocketIO as setRoomSocketIO } from './routes/roomRoutes';
+import { setSocketIO as setGameSocketIO } from './routes/gameRoutes';
+setRoomSocketIO(io);
+setGameSocketIO(io);
+
 // API 라우트
 app.use('/api', roomRoutes);
 app.use('/api', gameRoutes);
