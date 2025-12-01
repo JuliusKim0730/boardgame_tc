@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
@@ -79,15 +80,13 @@ app.get('/', (req, res) => {
   });
 });
 
+// 서버 시작
+const PORT = process.env.PORT || 10000;
+httpServer.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`📡 WebSocket ready`);
+  console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
+});
+
 // Vercel Serverless Function Export
 export default httpServer;
-
-// 로컬 개발용
-if (process.env.NODE_ENV !== 'production') {
-  const PORT = process.env.PORT || 3000;
-  httpServer.listen(PORT, () => {
-    console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`📡 WebSocket ready`);
-    console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
-  });
-}
