@@ -73,10 +73,26 @@ function ResultScreen({ gameId, roomId, playerId, onRestart, onBackToLobby }: Pr
   };
 
   // 비주류 특성 추출 (가중치 1배)
-  const getMinorTraits = () => {
-    if (!myResult) return {};
+  const getMinorTraits = (): { [key: string]: number } => {
+    if (!myResult) {
+      return {
+        taste: 0,
+        history: 0,
+        nature: 0,
+        culture: 0,
+        leisure: 0,
+        water: 0
+      };
+    }
     
-    const minorTraits: { [key: string]: number } = {};
+    const minorTraits: { [key: string]: number } = {
+      taste: 0,
+      history: 0,
+      nature: 0,
+      culture: 0,
+      leisure: 0,
+      water: 0
+    };
     const breakdown = myResult.breakdown;
     
     if (breakdown.taste.multiplier === 1) minorTraits.taste = breakdown.taste.base;

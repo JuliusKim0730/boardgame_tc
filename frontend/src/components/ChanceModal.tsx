@@ -10,10 +10,9 @@ interface Props {
   onCancel: () => void;
 }
 
-function ChanceModal({ type, message, players, cards, onResponse, onCancel }: Props) {
+function ChanceModal({ type, message, players, cards, onResponse }: Props) {
   const [selectedPlayer, setSelectedPlayer] = useState<string>('');
   const [selectedCard, setSelectedCard] = useState<string>('');
-  const [amount, setAmount] = useState<number>(0);
 
   const handleSubmit = () => {
     switch (type) {

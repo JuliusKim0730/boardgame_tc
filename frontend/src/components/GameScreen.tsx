@@ -21,7 +21,6 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
   const [playerState] = useState<any>(null);
   const [selectedPosition, setSelectedPosition] = useState<number | null>(null);
   const [message, setMessage] = useState('게임을 시작합니다!');
-  const [players, setPlayers] = useState<any[]>([]);
   const [is2Player, setIs2Player] = useState(false);
   const [showChanceOption, setShowChanceOption] = useState(false);
   const [isFirstHouseVisit, setIsFirstHouseVisit] = useState(true);
@@ -31,8 +30,8 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
     const fetchPlayers = async () => {
       try {
         const response = await api.getRoom(roomId);
-        setPlayers(response.players || []);
-        if (response.players?.length === 2) {
+        const players = response.data?.players || [];
+        if (players?.length === 2) {
           setIs2Player(true);
         }
       } catch (error) {
@@ -133,7 +132,7 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
     setShowChanceOption(false);
     
     try {
-      const response = await api.selectChanceOption(gameId, playerId, option);
+      await api.selectChanceOption(gameId, playerId, option);
       
       if (option === 'money') {
         setMessage(`💰 500TC를 획득했습니다!`);

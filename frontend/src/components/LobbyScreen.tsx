@@ -24,7 +24,7 @@ function LobbyScreen({ onGameStart }: Props) {
 
     try {
       const response = await api.createRoom(nickname);
-      const { roomId, code, userId } = response.data;
+      const { roomId, userId } = response.data;
       
       // 대기실로 이동 (임시로 게임 시작)
       const startResponse = await api.startGame(roomId);

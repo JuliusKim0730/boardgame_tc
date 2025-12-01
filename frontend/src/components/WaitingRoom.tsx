@@ -17,7 +17,7 @@ interface Player {
   nickname: string;
 }
 
-function WaitingRoom({ roomId, roomCode, userId, isHost, onGameStart, onBack }: Props) {
+function WaitingRoom({ roomId, roomCode, userId: _userId, isHost, onGameStart, onBack }: Props) {
   const [players, setPlayers] = useState<Player[]>([]);
   const [loading, setLoading] = useState(false);
 
