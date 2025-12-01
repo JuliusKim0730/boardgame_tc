@@ -1,5 +1,5 @@
 import { pool } from '../db/pool';
-import { Card } from '../../../shared/types';
+import { Card } from '../types';
 
 export class GameSetupService {
   // 게임 초기화
