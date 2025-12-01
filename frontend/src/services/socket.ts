@@ -4,7 +4,7 @@ import { io, Socket } from 'socket.io-client';
 const SOCKET_URL = import.meta.env.VITE_API_URL
   ? import.meta.env.VITE_API_URL
   : import.meta.env.PROD
-    ? 'https://boardgame-backend.onrender.com'  // 프로덕션: Render 백엔드
+    ? 'https://boardgame-tc.onrender.com'  // 프로덕션: Render 백엔드
     : 'http://localhost:3000';  // 개발: 로컬 백엔드
 
 console.log('SOCKET_URL:', SOCKET_URL);  // 디버깅용
