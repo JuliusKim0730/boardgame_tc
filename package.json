@@ -7,10 +7,6 @@
     "build": "cd frontend && npm run build",
     "dev:frontend": "cd frontend && npm run dev",
     "dev:backend": "cd backend && npm run dev",
-    "vercel-build": "cd frontend && npm install && npm run build"
-  },
-  "workspaces": [
-    "frontend",
-    "backend"
-  ]
+    "vercel-build": "cd frontend && npm ci && npm run build"
+  }
 }
