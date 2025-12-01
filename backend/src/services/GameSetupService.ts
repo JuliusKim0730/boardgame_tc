@@ -42,7 +42,7 @@ export class GameSetupService {
           `INSERT INTO player_states 
            (game_id, player_id, money, position, resolve_token, turn_order) 
            VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-          [gameId, shuffledPlayers[i].id, 3000, 1, true, i]
+          [gameId, shuffledPlayers[i].id, 3000, 1, 1, i]
         );
         
         // 초기 계획 카드 1장 드로우

@@ -131,7 +131,7 @@ export class TurnManager {
         // 7일차 시작 시 결심 토큰 재충전
         if (newDay === 8) {
           await client.query(
-            'UPDATE player_states SET resolve_token = TRUE WHERE game_id = $1',
+            'UPDATE player_states SET resolve_token = 1 WHERE game_id = $1',
             [gameId]
           );
         }
