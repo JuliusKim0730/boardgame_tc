@@ -14,6 +14,8 @@ const httpServer = createServer(app);
 const allowedOrigins = [
   'http://localhost:5173',
   'http://localhost:3000',
+  'https://boardgame-tc-frontend-javl8lp8g-juliuskim0730s-projects.vercel.app',
+  process.env.CLIENT_URL || '',
   process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '',
   process.env.FRONTEND_URL || ''
 ].filter(Boolean);

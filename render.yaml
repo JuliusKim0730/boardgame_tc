@@ -2,7 +2,7 @@ services:
   - type: web
     name: boardgame-backend
     env: node
-    region: oregon
+    region: singapore
     plan: free
     buildCommand: cd backend && npm install && npm run build
     startCommand: cd backend && npm start
@@ -10,10 +10,16 @@ services:
       - key: NODE_ENV
         value: production
       - key: PORT
-        value: 3000
-      - key: DATABASE_URL
+        value: 10000
+      - key: DB_HOST
         sync: false
-      - key: SUPABASE_URL
+      - key: DB_PORT
         sync: false
-      - key: SUPABASE_ANON_KEY
+      - key: DB_NAME
+        sync: false
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: CLIENT_URL
         sync: false
