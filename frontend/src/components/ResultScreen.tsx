@@ -105,8 +105,17 @@ function ResultScreen({ gameId, roomId, playerId, onRestart, onBackToLobby }: Pr
     return minorTraits;
   };
 
-  const getTravelMultipliers = () => {
-    if (!myResult) return {};
+  const getTravelMultipliers = (): { [key: string]: number } => {
+    if (!myResult) {
+      return {
+        taste: 1,
+        history: 1,
+        nature: 1,
+        culture: 1,
+        leisure: 1,
+        water: 1
+      };
+    }
     
     return {
       taste: myResult.breakdown.taste.multiplier,
