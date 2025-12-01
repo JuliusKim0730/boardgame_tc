@@ -1,9 +1,13 @@
 import axios from 'axios';
 
-// API URL 설정 (Render 백엔드 사용)
+// API URL 설정
 const API_BASE = import.meta.env.VITE_API_URL 
-  ? `${import.meta.env.VITE_API_URL}/api`  // 프로덕션: Render 백엔드
-  : 'http://localhost:3000/api';  // 개발: 로컬 백엔드
+  ? `${import.meta.env.VITE_API_URL}/api`
+  : import.meta.env.PROD
+    ? 'https://boardgame-backend.onrender.com/api'  // 프로덕션: Render 백엔드
+    : 'http://localhost:3000/api';  // 개발: 로컬 백엔드
+
+console.log('API_BASE:', API_BASE);  // 디버깅용
 
 export const api = {
   // 방 관리
