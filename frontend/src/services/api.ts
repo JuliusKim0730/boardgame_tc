@@ -1,8 +1,8 @@
 import axios from 'axios';
 
-// Vercel 배포 시 자동으로 올바른 URL 사용
-const API_BASE = import.meta.env.PROD 
-  ? '/api'  // 프로덕션: 같은 도메인
+// API URL 설정 (Render 백엔드 사용)
+const API_BASE = import.meta.env.VITE_API_URL 
+  ? `${import.meta.env.VITE_API_URL}/api`  // 프로덕션: Render 백엔드
   : 'http://localhost:3000/api';  // 개발: 로컬 백엔드
 
 export const api = {

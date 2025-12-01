@@ -1,8 +1,8 @@
 import { io, Socket } from 'socket.io-client';
 
-// Vercel 배포 시 자동으로 올바른 URL 사용
-const SOCKET_URL = import.meta.env.PROD
-  ? window.location.origin  // 프로덕션: 같은 도메인
+// Socket URL 설정 (Render 백엔드 사용)
+const SOCKET_URL = import.meta.env.VITE_API_URL
+  ? import.meta.env.VITE_API_URL  // 프로덕션: Render 백엔드
   : 'http://localhost:3000';  // 개발: 로컬 백엔드
 
 class SocketService {
