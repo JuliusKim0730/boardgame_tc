@@ -1,0 +1,88 @@
+.chance-option-modal {
+  background: white;
+  border-radius: 16px;
+  padding: 32px;
+  max-width: 500px;
+  width: 90%;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+}
+
+.chance-option-modal h2 {
+  margin: 0 0 16px 0;
+  color: #333;
+  text-align: center;
+}
+
+.chance-option-modal p {
+  margin: 0 0 24px 0;
+  color: #666;
+  text-align: center;
+}
+
+.option-buttons {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.option-btn {
+  flex: 1;
+  padding: 24px;
+  border: 3px solid #ddd;
+  border-radius: 12px;
+  background: white;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  text-align: center;
+}
+
+.option-btn:hover {
+  border-color: #2196F3;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(33, 150, 243, 0.2);
+}
+
+.option-btn.selected {
+  border-color: #2196F3;
+  background: #E3F2FD;
+  box-shadow: 0 4px 12px rgba(33, 150, 243, 0.3);
+}
+
+.option-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+}
+
+.option-title {
+  font-size: 20px;
+  font-weight: bold;
+  color: #333;
+  margin-bottom: 8px;
+}
+
+.option-desc {
+  font-size: 14px;
+  color: #666;
+}
+
+.confirm-btn {
+  width: 100%;
+  padding: 16px;
+  background: #2196F3;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: background 0.3s ease;
+}
+
+.confirm-btn:hover:not(:disabled) {
+  background: #1976D2;
+}
+
+.confirm-btn:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}

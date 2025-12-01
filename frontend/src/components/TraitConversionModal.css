@@ -1,0 +1,161 @@
+.trait-conversion-modal {
+  background: white;
+  border-radius: 16px;
+  padding: 32px;
+  max-width: 600px;
+  width: 90%;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+}
+
+.trait-conversion-modal h2 {
+  margin: 0 0 16px 0;
+  color: #333;
+  text-align: center;
+}
+
+.trait-conversion-modal .description {
+  margin: 0 0 24px 0;
+  padding: 16px;
+  background: #FFF3E0;
+  border-left: 4px solid #FF9800;
+  border-radius: 8px;
+  color: #666;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.trait-info {
+  margin-bottom: 24px;
+  padding: 16px;
+  background: #F5F5F5;
+  border-radius: 8px;
+}
+
+.trait-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  padding: 8px;
+  background: white;
+  border-radius: 4px;
+}
+
+.trait-name {
+  font-weight: bold;
+  color: #333;
+}
+
+.trait-value {
+  color: #666;
+}
+
+.conversion-control {
+  margin-bottom: 24px;
+  text-align: center;
+}
+
+.conversion-control label {
+  display: block;
+  margin-bottom: 12px;
+  font-weight: bold;
+  color: #333;
+}
+
+.conversion-input {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+
+.conversion-input button {
+  width: 48px;
+  height: 48px;
+  border: 2px solid #2196F3;
+  background: white;
+  color: #2196F3;
+  border-radius: 8px;
+  font-size: 24px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.conversion-input button:hover:not(:disabled) {
+  background: #2196F3;
+  color: white;
+}
+
+.conversion-input button:disabled {
+  border-color: #ccc;
+  color: #ccc;
+  cursor: not-allowed;
+}
+
+.conversion-input span {
+  font-size: 32px;
+  font-weight: bold;
+  color: #2196F3;
+  min-width: 60px;
+  text-align: center;
+}
+
+.conversion-preview {
+  margin-bottom: 24px;
+  padding: 16px;
+  background: #E3F2FD;
+  border-radius: 8px;
+  text-align: center;
+}
+
+.conversion-preview .formula {
+  font-size: 18px;
+  color: #1976D2;
+  font-weight: bold;
+  margin-bottom: 8px;
+}
+
+.conversion-preview .result {
+  font-size: 14px;
+  color: #666;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.modal-actions button {
+  flex: 1;
+  padding: 16px;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.cancel-btn {
+  background: #f5f5f5;
+  color: #666;
+}
+
+.cancel-btn:hover {
+  background: #e0e0e0;
+}
+
+.confirm-btn {
+  background: #2196F3;
+  color: white;
+}
+
+.confirm-btn:hover:not(:disabled) {
+  background: #1976D2;
+}
+
+.confirm-btn:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}

@@ -1,0 +1,87 @@
+.player-info {
+  padding: 20px;
+}
+
+.player-info h3 {
+  margin: 0 0 16px 0;
+  font-size: 18px;
+  color: #333;
+}
+
+.info-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.info-item:last-child {
+  border-bottom: none;
+}
+
+.label {
+  font-size: 14px;
+  color: #666;
+  font-weight: 500;
+}
+
+.value {
+  font-size: 16px;
+  color: #333;
+  font-weight: 600;
+}
+
+.traits-section {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 2px solid #f0f0f0;
+}
+
+.traits-section h4 {
+  margin: 0 0 12px 0;
+  font-size: 16px;
+  color: #333;
+}
+
+.traits-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.trait-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: #f8f9fa;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.trait-item span:first-child {
+  color: #666;
+}
+
+.trait-item span:last-child {
+  font-weight: 600;
+  color: #667eea;
+}
+
+.resolve-tokens {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.resolve-tokens .token {
+  font-size: 20px;
+}
+
+.resolve-tokens .token-count {
+  margin-left: 8px;
+  font-size: 14px;
+  color: #666;
+  font-weight: bold;
+}

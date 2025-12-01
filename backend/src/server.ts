@@ -1,0 +1,78 @@
+import express from 'express';
+import { createServer } from 'http';
+import { Server } from 'socket.io';
+import cors from 'cors';
+import roomRoutes from './routes/roomRoutes';
+import gameRoutes from './routes/gameRoutes';
+import { setupGameSocket } from './ws/gameSocket';
+import { chanceService } from './services/ChanceService';
+
+const app = express();
+const httpServer = createServer(app);
+
+// CORS 설정 (Vercel 배포용)
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:3000',
+  process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '',
+  process.env.FRONTEND_URL || ''
+].filter(Boolean);
+
+app.use(cors({
+  origin: allowedOrigins,
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
+}));
+
+app.use(express.json());
+
+// Socket.IO 설정
+const io = new Server(httpServer, {
+  cors: {
+    origin: allowedOrigins,
+    credentials: true,
+    methods: ['GET', 'POST']
+  },
+  transports: ['websocket', 'polling'],
+  allowEIO3: true
+});
+
+// ChanceService에 Socket.IO 인스턴스 전달
+chanceService.setSocketIO(io);
+
+// WebSocket 설정
+setupGameSocket(io);
+
+// API 라우트
+app.use('/api', roomRoutes);
+app.use('/api', gameRoutes);
+
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    version: '4.1.0',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// 루트 경로
+app.get('/', (req, res) => {
+  res.json({ 
+    message: '열네 밤의 꿈 API Server',
+    version: '4.1.0'
+  });
+});
+
+// Vercel Serverless Function Export
+export default httpServer;
+
+// 로컬 개발용
+if (process.env.NODE_ENV !== 'production') {
+  const PORT = process.env.PORT || 3000;
+  httpServer.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`📡 WebSocket ready`);
+    console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
+  });
+}

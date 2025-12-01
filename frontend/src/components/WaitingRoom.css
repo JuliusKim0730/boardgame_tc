@@ -1,0 +1,144 @@
+.waiting-room-container {
+  width: 100%;
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.waiting-room-card {
+  padding: 32px;
+}
+
+.room-code-section {
+  text-align: center;
+  margin: 24px 0;
+  padding: 24px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: 12px;
+  color: white;
+}
+
+.room-code-label {
+  font-size: 14px;
+  margin: 0 0 8px 0;
+  opacity: 0.9;
+}
+
+.room-code {
+  font-size: 48px;
+  font-weight: 700;
+  letter-spacing: 8px;
+  margin: 8px 0;
+  font-family: 'Courier New', monospace;
+}
+
+.room-code-hint {
+  font-size: 14px;
+  margin: 8px 0 0 0;
+  opacity: 0.9;
+}
+
+.players-section {
+  margin: 24px 0;
+}
+
+.players-section h3 {
+  font-size: 18px;
+  margin: 0 0 16px 0;
+  color: #333;
+}
+
+.players-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.player-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border-left: 4px solid #667eea;
+}
+
+.player-number {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  background: #667eea;
+  color: white;
+  border-radius: 50%;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.player-nickname {
+  flex: 1;
+  font-size: 16px;
+  font-weight: 500;
+  color: #333;
+}
+
+.host-badge {
+  font-size: 14px;
+  padding: 4px 12px;
+  background: #ffd700;
+  border-radius: 12px;
+  font-weight: 600;
+}
+
+.waiting-room-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.waiting-message {
+  text-align: center;
+  padding: 16px;
+  background: #e3f2fd;
+  border-radius: 8px;
+  color: #1976d2;
+  font-weight: 500;
+  margin: 0;
+}
+
+.btn {
+  padding: 14px 24px;
+  font-size: 16px;
+  font-weight: 600;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+}
+
+.btn-secondary {
+  background: #f0f0f0;
+  color: #333;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: #e0e0e0;
+}
