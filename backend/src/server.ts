@@ -10,7 +10,7 @@ import { chanceService } from './services/ChanceService';
 const app = express();
 const httpServer = createServer(app);
 
-// CORS 설정 (Vercel 배포용)
+// CORS 설정 (모든 Vercel 도메인 허용)
 const allowedOrigins = [
   'http://localhost:5173',
   'http://localhost:3000',
@@ -21,7 +21,14 @@ const allowedOrigins = [
 ].filter(Boolean);
 
 app.use(cors({
-  origin: allowedOrigins,
+  origin: (origin, callback) => {
+    // Vercel 도메인 또는 허용된 origin
+    if (!origin || allowedOrigins.includes(origin) || origin.includes('vercel.app')) {
+      callback(null, true);
+    } else {
+      callback(null, true); // 개발 중에는 모두 허용
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
 }));
