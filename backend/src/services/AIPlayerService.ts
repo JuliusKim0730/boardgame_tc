@@ -605,21 +605,37 @@ export class AIPlayerService {
       console.log(`✅ AI 이동 완료: ${currentPosition} → ${position}`);
       
     } catch (error: any) {
-      await client.query('ROLLBACK');
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        // 롤백 실패는 무시 (이미 연결이 끊어진 경우)
+      }
       
       // 타임아웃 에러이고 재시도 가능하면 재시도
       if (error.code === '57014' && retryCount < maxRetries) {
         console.log(`⚠️ 이동 타임아웃, 재시도 ${retryCount + 1}/${maxRetries}`);
-        client.release();
+        
+        // 클라이언트 해제
+        try {
+          client.release();
+        } catch (releaseError) {
+          // 이미 해제된 경우 무시
+        }
         
         // 잠시 대기 후 재시도
         await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
         return this.moveWithTransaction(gameId, playerId, position, retryCount + 1);
       }
       
+      // 재시도하지 않는 경우에만 finally로 넘어감
       throw error;
     } finally {
-      client.release();
+      // 클라이언트 해제 (재시도 시에는 이미 해제됨)
+      try {
+        client.release();
+      } catch (e) {
+        // 이미 해제된 경우 무시
+      }
     }
   }
 
@@ -716,21 +732,37 @@ export class AIPlayerService {
       console.log(`✅ AI 행동 완료: ${action}번`);
       
     } catch (error: any) {
-      await client.query('ROLLBACK');
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        // 롤백 실패는 무시 (이미 연결이 끊어진 경우)
+      }
       
       // 타임아웃 에러이고 재시도 가능하면 재시도
       if (error.code === '57014' && retryCount < maxRetries) {
         console.log(`⚠️ 행동 타임아웃, 재시도 ${retryCount + 1}/${maxRetries}`);
-        client.release();
+        
+        // 클라이언트 해제
+        try {
+          client.release();
+        } catch (releaseError) {
+          // 이미 해제된 경우 무시
+        }
         
         // 잠시 대기 후 재시도
         await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
         return this.performActionWithTransaction(gameId, playerId, action, retryCount + 1);
       }
       
+      // 재시도하지 않는 경우에만 finally로 넘어감
       throw error;
     } finally {
-      client.release();
+      // 클라이언트 해제 (재시도 시에는 이미 해제됨)
+      try {
+        client.release();
+      } catch (e) {
+        // 이미 해제된 경우 무시
+      }
     }
   }
 
