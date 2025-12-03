@@ -13,11 +13,17 @@ function App() {
   const [userId, setUserId] = useState<string>('');
   const [isHost, setIsHost] = useState<boolean>(false);
 
-  const handleRoomCreated = (roomId: string, roomCode: string, userId: string, isHost: boolean) => {
+  const handleRoomCreated = (roomId: string, roomCode: string, userId: string, playerId: string, isHost: boolean) => {
+    console.log('=== 방 생성/참가 ===');
+    console.log('roomId:', roomId);
+    console.log('userId:', userId);
+    console.log('playerId:', playerId);
+    console.log('isHost:', isHost);
+    
     setRoomId(roomId);
     setRoomCode(roomCode);
     setUserId(userId);
-    setPlayerId(userId);
+    setPlayerId(playerId);  // ← 이제 올바른 playerId 설정
     setIsHost(isHost);
     setGameState('waiting');
   };

@@ -50,8 +50,10 @@ export class AIScheduler {
    * AI 턴 체크 및 실행
    */
   private async checkAndExecuteAITurns() {
-    const client = await pool.connect();
+    let client;
     try {
+      client = await pool.connect();
+      
       // 진행 중인 게임에서 AI 플레이어의 턴 찾기
       const result = await client.query(`
         SELECT 
@@ -67,24 +69,46 @@ export class AIScheduler {
         JOIN players p ON p.id = ps.player_id
         JOIN users u ON u.id = p.user_id
         WHERE g.status = 'running'
-        AND u.nickname LIKE '%로봇%' OR u.nickname LIKE '%AI%' OR u.nickname LIKE '%봇%'
+        AND (u.nickname ~ '로봇|AI|봇|컴퓨터|기계|알고리즘')
       `);
+
+      // 클라이언트 먼저 해제
+      client.release();
+      client = null;
 
       for (const row of result.rows) {
         console.log(`🤖 AI 턴 실행: ${row.nickname} (게임 ${row.game_id})`);
         
         try {
-          // AI 턴 실행
+          // AI 턴 실행 (새로운 연결 사용)
           await aiPlayerService.executeTurn(row.game_id, row.player_id);
           
           // 잠시 대기 (자연스러운 플레이를 위해)
           await this.delay(2000);
-        } catch (error) {
-          console.error(`AI 턴 실행 실패 (${row.nickname}):`, error);
+        } catch (error: any) {
+          console.error(`❌ AI 턴 실행 실패 (${row.nickname}):`, error);
+          // 데이터베이스 풀 에러 처리
+          if (error?.code === 'XX000' || error?.message?.includes('DbHandler exited')) {
+            console.error('⚠️  데이터베이스 연결 문제 감지, 다음 체크에서 재시도');
+            return;
+          }
         }
       }
+    } catch (error: any) {
+      // 연결 에러는 조용히 처리 (다음 체크에서 재시도)
+      if (error?.code === 'ECONNRESET' || error?.code === 'ECONNREFUSED' || error?.code === 'XX000') {
+        console.log('⚠️  데이터베이스 연결 에러, 다음 체크에서 재시도');
+        return;
+      }
+      console.error('AI 스케줄러 에러:', error);
     } finally {
-      client.release();
+      if (client) {
+        try {
+          client.release();
+        } catch (e) {
+          // 이미 해제된 경우 무시
+        }
+      }
     }
   }
 

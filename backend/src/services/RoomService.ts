@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 export class RoomService {
   // 방 생성
-  async createRoom(hostNickname: string): Promise<{ roomId: string; code: string; userId: string }> {
+  async createRoom(hostNickname: string): Promise<{ roomId: string; code: string; userId: string; playerId: string }> {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -26,13 +26,14 @@ export class RoomService {
       const userId = userResult.rows[0].id;
       
       // 플레이어 추가
-      await client.query(
-        'INSERT INTO players (user_id, room_id) VALUES ($1, $2)',
+      const playerResult = await client.query(
+        'INSERT INTO players (user_id, room_id) VALUES ($1, $2) RETURNING id',
         [userId, roomId]
       );
+      const playerId = playerResult.rows[0].id;
       
       await client.query('COMMIT');
-      return { roomId, code, userId };
+      return { roomId, code, userId, playerId };
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
@@ -42,7 +43,7 @@ export class RoomService {
   }
 
   // 방 참여
-  async joinRoom(code: string, nickname: string): Promise<{ roomId: string; userId: string }> {
+  async joinRoom(code: string, nickname: string): Promise<{ roomId: string; userId: string; playerId: string }> {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -60,6 +61,17 @@ export class RoomService {
       const room = roomResult.rows[0];
       if (room.status !== 'waiting') {
         throw new Error('이미 진행 중인 게임입니다');
+      }
+      
+      // 현재 플레이어 수 확인 (최대 5명)
+      const playerCountResult = await client.query(
+        'SELECT COUNT(*) as count FROM players WHERE room_id = $1',
+        [room.id]
+      );
+      
+      const currentPlayerCount = parseInt(playerCountResult.rows[0].count);
+      if (currentPlayerCount >= 5) {
+        throw new Error('방이 가득 찼습니다 (최대 5명)');
       }
       
       // 닉네임 중복 체크 및 suffix 부여
@@ -86,13 +98,14 @@ export class RoomService {
       const userId = userResult.rows[0].id;
       
       // 플레이어 추가
-      await client.query(
-        'INSERT INTO players (user_id, room_id) VALUES ($1, $2)',
+      const playerResult = await client.query(
+        'INSERT INTO players (user_id, room_id) VALUES ($1, $2) RETURNING id',
         [userId, room.id]
       );
+      const playerId = playerResult.rows[0].id;
       
       await client.query('COMMIT');
-      return { roomId: room.id, userId };
+      return { roomId: room.id, userId, playerId };
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
@@ -112,31 +125,65 @@ export class RoomService {
       throw new Error('방을 찾을 수 없습니다');
     }
     
+    // created_at 컬럼 존재 여부 확인
+    const columnCheck = await pool.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'players' AND column_name = 'created_at'
+    `);
+    
+    const hasCreatedAt = columnCheck.rows.length > 0;
+    
+    // 플레이어 조회 (생성 순서대로 = 첫 번째가 방장)
+    const orderBy = hasCreatedAt ? 'p.created_at' : 'p.id';
     const playersResult = await pool.query(
-      `SELECT p.id, u.nickname FROM players p 
+      `SELECT p.id, p.user_id, u.nickname FROM players p 
        JOIN users u ON p.user_id = u.id 
        WHERE p.room_id = $1
-       ORDER BY p.created_at`,
+       ORDER BY ${orderBy}`,
       [roomId]
     );
     
-    // 슬롯 정보 조회 (room_slots 테이블이 있다면)
-    let slots = null;
-    try {
-      const slotsResult = await pool.query(
-        'SELECT * FROM room_slots WHERE room_id = $1 ORDER BY slot_index',
-        [roomId]
-      );
-      if (slotsResult.rows.length > 0) {
-        slots = slotsResult.rows;
+    const players = playersResult.rows;
+    
+    // 슬롯 정보 생성 (5개 슬롯)
+    const slots = [];
+    
+    for (let i = 0; i < 5; i++) {
+      const player = players[i];
+      
+      if (player) {
+        // AI 플레이어 확인 (닉네임에 '로봇', 'AI', '봇' 등이 포함되어 있으면 AI)
+        const isAI = /로봇|AI|봇|컴퓨터|기계|알고리즘/.test(player.nickname);
+        
+        slots.push({
+          index: i,
+          status: isAI ? 'ai' : 'user',
+          player: {
+            id: player.id,
+            userId: player.user_id,
+            nickname: player.nickname,
+            isHost: i === 0 // 첫 번째 플레이어가 방장
+          }
+        });
+      } else {
+        // 빈 슬롯
+        slots.push({
+          index: i,
+          status: 'user'
+        });
       }
-    } catch (error) {
-      // room_slots 테이블이 없으면 무시
     }
     
     return {
       room: roomResult.rows[0],
-      players: playersResult.rows,
+      players: players.map((p, idx) => ({
+        id: p.id,
+        userId: p.user_id,
+        nickname: p.nickname,
+        isHost: idx === 0,
+        isAI: /로봇|AI|봇|컴퓨터|기계|알고리즘/.test(p.nickname)
+      })),
       slots
     };
   }
@@ -147,10 +194,33 @@ export class RoomService {
     try {
       await client.query('BEGIN');
 
-      // room_slots 테이블 확인 및 생성
-      await this.ensureRoomSlotsTable(client);
+      // created_at 컬럼 존재 여부 확인
+      const columnCheck = await client.query(`
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_name = 'players' AND column_name = 'created_at'
+      `);
+      
+      const hasCreatedAt = columnCheck.rows.length > 0;
+      const orderBy = hasCreatedAt ? 'p.created_at' : 'p.id';
+
+      // 현재 슬롯의 플레이어 확인
+      const playersResult = await client.query(
+        `SELECT p.id, p.user_id FROM players p 
+         WHERE p.room_id = $1
+         ORDER BY ${orderBy}`,
+        [roomId]
+      );
+      
+      const players = playersResult.rows;
+      const targetPlayer = players[slotIndex];
 
       if (action === 'ai') {
+        // 해당 슬롯에 이미 플레이어가 있으면 제거
+        if (targetPlayer) {
+          await client.query('DELETE FROM players WHERE id = $1', [targetPlayer.id]);
+        }
+        
         // AI 봇 추가
         const aiNickname = this.generateAINickname();
         
@@ -161,59 +231,42 @@ export class RoomService {
         );
         const userId = userResult.rows[0].id;
         
-        // AI 플레이어 추가
-        await client.query(
-          'INSERT INTO players (user_id, room_id) VALUES ($1, $2)',
-          [userId, roomId]
-        );
-
-        // 슬롯 정보 저장
-        await client.query(
-          `INSERT INTO room_slots (room_id, slot_index, status, player_id) 
-           VALUES ($1, $2, $3, (SELECT id FROM players WHERE user_id = $4 AND room_id = $1))
-           ON CONFLICT (room_id, slot_index) 
-           DO UPDATE SET status = $3, player_id = (SELECT id FROM players WHERE user_id = $4 AND room_id = $1)`,
-          [roomId, slotIndex, 'ai', userId]
-        );
+        // 해당 슬롯 위치에 AI 플레이어 추가
+        if (hasCreatedAt) {
+          // created_at이 있으면 시간 조정하여 순서 유지
+          const targetTime = new Date();
+          targetTime.setSeconds(targetTime.getSeconds() + slotIndex);
+          
+          await client.query(
+            'INSERT INTO players (user_id, room_id, created_at) VALUES ($1, $2, $3)',
+            [userId, roomId, targetTime]
+          );
+        } else {
+          // created_at이 없으면 그냥 추가
+          await client.query(
+            'INSERT INTO players (user_id, room_id) VALUES ($1, $2)',
+            [userId, roomId]
+          );
+        }
       } else if (action === 'ban') {
         // 해당 슬롯의 플레이어 제거
-        const slotResult = await client.query(
-          'SELECT player_id FROM room_slots WHERE room_id = $1 AND slot_index = $2',
-          [roomId, slotIndex]
-        );
-
-        if (slotResult.rows.length > 0 && slotResult.rows[0].player_id) {
-          const playerId = slotResult.rows[0].player_id;
-          await client.query('DELETE FROM players WHERE id = $1', [playerId]);
+        if (targetPlayer) {
+          await client.query('DELETE FROM players WHERE id = $1', [targetPlayer.id]);
         }
-
-        // 슬롯을 ban 상태로 변경
-        await client.query(
-          `INSERT INTO room_slots (room_id, slot_index, status) 
-           VALUES ($1, $2, $3)
-           ON CONFLICT (room_id, slot_index) 
-           DO UPDATE SET status = $3, player_id = NULL`,
-          [roomId, slotIndex, 'ban']
-        );
       } else {
-        // user 상태로 변경 (기존 플레이어 제거)
-        const slotResult = await client.query(
-          'SELECT player_id FROM room_slots WHERE room_id = $1 AND slot_index = $2',
-          [roomId, slotIndex]
-        );
-
-        if (slotResult.rows.length > 0 && slotResult.rows[0].player_id) {
-          const playerId = slotResult.rows[0].player_id;
-          await client.query('DELETE FROM players WHERE id = $1', [playerId]);
+        // user 상태로 변경 (AI 플레이어만 제거)
+        if (targetPlayer) {
+          const userResult = await client.query(
+            'SELECT nickname FROM users WHERE id = $1',
+            [targetPlayer.user_id]
+          );
+          
+          const isAI = /로봇|AI|봇|컴퓨터|기계|알고리즘/.test(userResult.rows[0].nickname);
+          
+          if (isAI) {
+            await client.query('DELETE FROM players WHERE id = $1', [targetPlayer.id]);
+          }
         }
-
-        await client.query(
-          `INSERT INTO room_slots (room_id, slot_index, status) 
-           VALUES ($1, $2, $3)
-           ON CONFLICT (room_id, slot_index) 
-           DO UPDATE SET status = $3, player_id = NULL`,
-          [roomId, slotIndex, 'user']
-        );
       }
 
       await client.query('COMMIT');

@@ -1,0 +1,176 @@
+.card-draw-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.card-draw-modal {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: 20px;
+  padding: 30px;
+  max-width: 400px;
+  width: 90%;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  animation: slideUp 0.3s ease;
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(50px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.card-draw-header {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+.card-draw-header h2 {
+  color: white;
+  font-size: 28px;
+  margin: 0;
+  text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.card-draw-content {
+  margin-bottom: 20px;
+}
+
+.card-draw-card {
+  background: white;
+  border-radius: 15px;
+  padding: 25px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+  position: relative;
+  animation: cardFlip 0.6s ease;
+}
+
+@keyframes cardFlip {
+  0% {
+    transform: rotateY(90deg);
+  }
+  100% {
+    transform: rotateY(0deg);
+  }
+}
+
+.card-type-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: #667eea;
+  color: white;
+  padding: 5px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+
+.card-draw-name {
+  font-size: 24px;
+  font-weight: bold;
+  color: #2d3748;
+  margin-bottom: 8px;
+  text-align: center;
+}
+
+.card-draw-code {
+  text-align: center;
+  color: #718096;
+  font-size: 14px;
+  margin-bottom: 15px;
+}
+
+.card-draw-cost {
+  text-align: center;
+  font-size: 18px;
+  font-weight: bold;
+  color: #48bb78;
+  margin-bottom: 20px;
+  padding: 10px;
+  background: #f0fff4;
+  border-radius: 10px;
+}
+
+.card-draw-effects {
+  margin-top: 15px;
+}
+
+.effects-title {
+  font-size: 14px;
+  font-weight: bold;
+  color: #4a5568;
+  margin-bottom: 10px;
+  text-align: center;
+}
+
+.effects-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.effect-item {
+  background: #edf2f7;
+  padding: 10px 15px;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 500;
+  color: #2d3748;
+  text-align: center;
+}
+
+.card-draw-footer {
+  text-align: center;
+}
+
+.auto-close-hint {
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 14px;
+  margin-bottom: 15px;
+}
+
+.btn-close {
+  background: white;
+  color: #667eea;
+  border: none;
+  padding: 12px 30px;
+  border-radius: 25px;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+}
+
+.btn-close:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+}
+
+.btn-close:active {
+  transform: translateY(0);
+}

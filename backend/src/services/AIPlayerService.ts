@@ -25,10 +25,12 @@ export class AIPlayerService {
       
       // 1. 이동 결정
       const targetPosition = await this.decideMove(gameState);
+      console.log(`🤖 AI 이동 결정: ${gameState.playerState.position} → ${targetPosition}`);
       await this.move(client, gameId, playerId, targetPosition);
 
       // 2. 행동 결정
       const action = await this.decideAction(gameState, targetPosition);
+      console.log(`🤖 AI 행동 결정: ${action}번`);
       await this.performAction(client, gameId, playerId, action);
 
       // 3. 찬스 카드 처리 (필요 시)
@@ -36,15 +38,29 @@ export class AIPlayerService {
         await this.handleChanceCard(client, gameState);
       }
 
-      // 4. 턴 종료
-      await this.endTurn(client, gameId, playerId);
-
       await client.query('COMMIT');
-    } catch (error) {
+      console.log(`✅ AI 행동 완료`);
+    } catch (error: any) {
       await client.query('ROLLBACK');
+      console.error('❌ AI 턴 실행 중 에러:', error);
       throw error;
     } finally {
-      client.release();
+      try {
+        client.release();
+      } catch (e) {
+        console.error('클라이언트 해제 실패:', e);
+      }
+    }
+
+    // 4. 턴 종료 (별도 트랜잭션으로 TurnManager 사용)
+    try {
+      console.log(`🤖 AI 턴 종료 중...`);
+      const { turnManager } = await import('./TurnManager');
+      await turnManager.endTurn(gameId, playerId);
+      console.log(`✅ AI 턴 완료`);
+    } catch (error: any) {
+      console.error('❌ AI 턴 종료 중 에러:', error);
+      throw error;
     }
   }
 
@@ -424,30 +440,101 @@ export class AIPlayerService {
    * 이동 실행
    */
   private async move(client: any, gameId: string, playerId: string, position: number): Promise<void> {
+    // 현재 위치 조회
+    const stateResult = await client.query(
+      'SELECT position FROM player_states WHERE game_id = $1 AND player_id = $2',
+      [gameId, playerId]
+    );
+    const currentPosition = stateResult.rows[0].position;
+    
+    // 위치 업데이트
     await client.query(
-      'UPDATE player_states SET position = $1 WHERE game_id = $2 AND player_id = $3',
-      [position, gameId, playerId]
+      'UPDATE player_states SET position = $1, last_position = $2 WHERE game_id = $3 AND player_id = $4',
+      [position, currentPosition, gameId, playerId]
+    );
+    
+    // 이벤트 로그
+    await client.query(
+      'INSERT INTO event_logs (game_id, event_type, data) VALUES ($1, $2, $3)',
+      [gameId, 'move', JSON.stringify({ playerId, from: currentPosition, to: position })]
     );
   }
 
   /**
-   * 행동 실행
+   * 행동 실행 (카드 드로우)
    */
   private async performAction(client: any, gameId: string, playerId: string, action: number): Promise<void> {
-    // TurnService의 performAction 호출
-    const { TurnService } = await import('./TurnService');
-    const turnService = new TurnService();
-    await turnService.performAction(gameId, playerId, action);
+    const stateResult = await client.query(
+      'SELECT id FROM player_states WHERE game_id = $1 AND player_id = $2',
+      [gameId, playerId]
+    );
+    const playerStateId = stateResult.rows[0].id;
+    
+    let deckType = '';
+    switch (action) {
+      case 1: deckType = 'freeplan'; break;
+      case 2: deckType = 'plan'; break;
+      case 3: deckType = 'house'; break;
+      case 4: deckType = 'support'; break;
+      case 5: deckType = 'chance'; break;
+      default: return;
+    }
+    
+    // 덱에서 카드 드로우
+    const deckResult = await client.query(
+      'SELECT card_order FROM decks WHERE game_id = $1 AND type = $2',
+      [gameId, deckType]
+    );
+    
+    if (deckResult.rows.length === 0) return;
+    
+    let cardOrder = deckResult.rows[0].card_order;
+    if (typeof cardOrder === 'string') {
+      cardOrder = JSON.parse(cardOrder);
+    }
+    if (cardOrder.length === 0) return;
+    
+    const cardId = cardOrder.shift();
+    
+    // 덱 업데이트
+    await client.query(
+      'UPDATE decks SET card_order = $1 WHERE game_id = $2 AND type = $3',
+      [JSON.stringify(cardOrder), gameId, deckType]
+    );
+    
+    // 카드 정보 조회
+    const cardResult = await client.query('SELECT * FROM cards WHERE id = $1', [cardId]);
+    const card = cardResult.rows[0];
+    
+    // 손패에 추가 (plan, freeplan만)
+    if (['plan', 'freeplan'].includes(deckType)) {
+      const seqResult = await client.query(
+        'SELECT COALESCE(MAX(seq), -1) + 1 as next_seq FROM hands WHERE player_state_id = $1',
+        [playerStateId]
+      );
+      
+      await client.query(
+        'INSERT INTO hands (player_state_id, card_id, seq) VALUES ($1, $2, $3)',
+        [playerStateId, cardId, seqResult.rows[0].next_seq]
+      );
+    }
+    
+    // TC 효과 적용 (house, support)
+    if (card.effects && card.effects.money) {
+      await client.query(
+        'UPDATE player_states SET money = money + $1 WHERE id = $2',
+        [card.effects.money, playerStateId]
+      );
+    }
+    
+    // 행동 로그
+    await client.query(
+      'INSERT INTO event_logs (game_id, event_type, data) VALUES ($1, $2, $3)',
+      [gameId, `action_${action}`, JSON.stringify({ playerId, action, cardId })]
+    );
   }
 
-  /**
-   * 턴 종료
-   */
-  private async endTurn(client: any, gameId: string, playerId: string): Promise<void> {
-    // TurnManager의 endTurn 호출
-    const { turnManager } = await import('./TurnManager');
-    await turnManager.endTurn(gameId, playerId);
-  }
+
 }
 
 export const aiPlayerService = new AIPlayerService();

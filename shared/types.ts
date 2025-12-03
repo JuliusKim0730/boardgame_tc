@@ -46,7 +46,7 @@ export interface PlayerState {
   playerId: string;
   money: number;
   position: number;
-  resolveToken: boolean;
+  resolveToken: number;  // 결심 토큰 개수 (0~2)
   traits: Traits;
   turnOrder: number;
   status: PlayerStatus;

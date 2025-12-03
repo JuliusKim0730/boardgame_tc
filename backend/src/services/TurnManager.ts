@@ -3,6 +3,26 @@ import { pool } from '../db/pool';
 export class TurnManager {
   private turnLocks: Map<string, string> = new Map(); // gameId -> playerId
 
+  // 서버 시작 시 턴 락 복원
+  async restoreTurnLocks(): Promise<void> {
+    try {
+      const result = await pool.query(
+        `SELECT id, current_turn_player_id 
+         FROM games 
+         WHERE status = 'running' AND current_turn_player_id IS NOT NULL`
+      );
+      
+      result.rows.forEach(row => {
+        this.turnLocks.set(row.id, row.current_turn_player_id);
+        console.log(`🔄 턴 락 복원: gameId=${row.id}, playerId=${row.current_turn_player_id}`);
+      });
+      
+      console.log(`✅ ${result.rows.length}개 게임의 턴 락 복원 완료`);
+    } catch (error) {
+      console.error('❌ 턴 락 복원 실패:', error);
+    }
+  }
+
   // 턴 잠금 확인
   isCurrentTurn(gameId: string, playerId: string): boolean {
     const lockedPlayer = this.turnLocks.get(gameId);
@@ -12,11 +32,13 @@ export class TurnManager {
   // 턴 잠금 설정
   lockTurn(gameId: string, playerId: string): void {
     this.turnLocks.set(gameId, playerId);
+    console.log(`🔒 턴 락 설정: gameId=${gameId}, playerId=${playerId}`);
   }
 
   // 턴 잠금 해제
   unlockTurn(gameId: string): void {
     this.turnLocks.delete(gameId);
+    console.log(`🔓 턴 락 해제: gameId=${gameId}`);
   }
 
   // 턴 시작

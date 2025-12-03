@@ -218,6 +218,25 @@ router.post('/games/:gameId/use-resolve-token', async (req, res) => {
   }
 });
 
+// 안전한 JSON 파싱 헬퍼
+function safeParseJSON(data: any, fieldName: string = 'data'): any {
+  if (!data) {
+    return {};
+  }
+  if (typeof data === 'object') {
+    return data;
+  }
+  if (typeof data === 'string') {
+    try {
+      return JSON.parse(data);
+    } catch (error) {
+      console.error(`${fieldName} 파싱 실패:`, error);
+      return {};
+    }
+  }
+  return {};
+}
+
 // 게임 상태 조회
 router.get('/games/:gameId/state', async (req, res) => {
   try {
@@ -239,12 +258,60 @@ router.get('/games/:gameId/state', async (req, res) => {
       
       // 플레이어 상태들
       const playersResult = await client.query(
-        `SELECT ps.*, p.id as player_id 
+        `SELECT ps.*, p.id as player_id, u.nickname
          FROM player_states ps
          JOIN players p ON ps.player_id = p.id
+         JOIN users u ON p.user_id = u.id
          WHERE ps.game_id = $1
          ORDER BY ps.turn_order`,
         [gameId]
+      );
+      
+      // 각 플레이어의 여행지 카드 및 손패 조회
+      const playersWithTravelCards = await Promise.all(
+        playersResult.rows.map(async (player) => {
+          // 여행지 카드 조회
+          const travelCardResult = await client.query(
+            `SELECT c.* FROM purchased pu
+             JOIN cards c ON pu.card_id = c.id
+             WHERE pu.player_state_id = $1 AND c.type = 'travel'
+             LIMIT 1`,
+            [player.id]
+          );
+          
+          let travelCard = null;
+          if (travelCardResult.rows.length > 0) {
+            const card = travelCardResult.rows[0];
+            travelCard = {
+              ...card,
+              effects: safeParseJSON(card.effects, 'travelCard.effects'),
+              metadata: safeParseJSON(card.metadata, 'travelCard.metadata')
+            };
+          }
+          
+          // 손패 조회
+          const handCardsResult = await client.query(
+            `SELECT c.id, c.code, c.name, c.type, c.cost, c.effects, c.metadata
+             FROM hands h
+             JOIN cards c ON h.card_id = c.id
+             WHERE h.player_state_id = $1
+             ORDER BY h.seq`,
+            [player.id]
+          );
+          
+          const handCards = handCardsResult.rows.map(card => ({
+            ...card,
+            effects: safeParseJSON(card.effects, 'handCard.effects'),
+            metadata: safeParseJSON(card.metadata, 'handCard.metadata')
+          }));
+          
+          return {
+            ...player,
+            traits: safeParseJSON(player.traits, 'player.traits'),
+            travelCard,
+            hand_cards: handCards
+          };
+        })
       );
       
       // 공동 목표 현황
@@ -255,6 +322,23 @@ router.get('/games/:gameId/state', async (req, res) => {
         [gameId]
       );
       
+      // 공동 계획 카드 정보 조회
+      let jointPlanCard = null;
+      if (game.joint_plan_card_id) {
+        const jointCardResult = await client.query(
+          'SELECT id, code, name, type, cost, effects, metadata FROM cards WHERE id = $1',
+          [game.joint_plan_card_id]
+        );
+        if (jointCardResult.rows.length > 0) {
+          const card = jointCardResult.rows[0];
+          jointPlanCard = {
+            ...card,
+            effects: safeParseJSON(card.effects, 'jointPlan.effects'),
+            metadata: safeParseJSON(card.metadata, 'jointPlan.metadata')
+          };
+        }
+      }
+      
       res.json({
         game: {
           id: game.id,
@@ -264,9 +348,11 @@ router.get('/games/:gameId/state', async (req, res) => {
           travelTheme: game.travel_theme,
           jointPlanCardId: game.joint_plan_card_id
         },
-        players: playersResult.rows,
+        players: playersWithTravelCards,
         jointPlan: {
-          total: parseInt(jointPlanResult.rows[0].total)
+          card: jointPlanCard,
+          total: parseInt(jointPlanResult.rows[0].total),
+          target: 10000
         }
       });
     } finally {
@@ -310,3 +396,37 @@ router.get('/games/:gameId/players/:playerId', async (req, res) => {
 });
 
 export default router;
+
+
+// 이벤트 로그 조회
+router.get('/games/:gameId/logs', async (req, res) => {
+  try {
+    const { gameId } = req.params;
+    const client = await pool.connect();
+    
+    try {
+      const logsResult = await client.query(
+        `SELECT 
+          el.id,
+          el.event_type,
+          el.data,
+          el.created_at,
+          u.nickname
+         FROM event_logs el
+         LEFT JOIN player_states ps ON (el.data->>'playerId')::uuid = ps.player_id AND ps.game_id = el.game_id
+         LEFT JOIN players p ON ps.player_id = p.id
+         LEFT JOIN users u ON p.user_id = u.id
+         WHERE el.game_id = $1
+         ORDER BY el.created_at DESC
+         LIMIT 50`,
+        [gameId]
+      );
+      
+      res.json({ logs: logsResult.rows });
+    } finally {
+      client.release();
+    }
+  } catch (error: any) {
+    res.status(400).json({ error: error.message });
+  }
+});

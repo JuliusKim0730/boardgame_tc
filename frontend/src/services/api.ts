@@ -1,13 +1,40 @@
-import axios from 'axios';
+import axios, { AxiosError } from 'axios';
 
 // API URL 설정
 const API_BASE = import.meta.env.VITE_API_URL 
   ? `${import.meta.env.VITE_API_URL}/api`
   : import.meta.env.PROD
     ? 'https://boardgame-tc.onrender.com/api'  // 프로덕션: Render 백엔드
-    : 'http://localhost:3000/api';  // 개발: 로컬 백엔드
+    : 'http://localhost:4000/api';  // 개발: 로컬 백엔드 (포트 4000)
 
 console.log('API_BASE:', API_BASE);  // 디버깅용
+console.log('Environment:', import.meta.env.MODE);
+
+// Axios 인터셉터 - 에러 로깅 강화
+axios.interceptors.response.use(
+  (response) => response,
+  (error: AxiosError) => {
+    if (error.response) {
+      // 서버가 응답했지만 에러 상태 코드
+      console.error('API Error Response:', {
+        status: error.response.status,
+        data: error.response.data,
+        url: error.config?.url,
+        method: error.config?.method
+      });
+    } else if (error.request) {
+      // 요청은 보냈지만 응답이 없음
+      console.error('API No Response:', {
+        url: error.config?.url,
+        message: error.message
+      });
+    } else {
+      // 요청 설정 중 에러
+      console.error('API Request Setup Error:', error.message);
+    }
+    return Promise.reject(error);
+  }
+);
 
 export const api = {
   // 방 관리
@@ -85,4 +112,8 @@ export const api = {
 
   kickPlayer: (roomId: string, playerId: string) =>
     axios.post(`${API_BASE}/rooms/${roomId}/kick`, { playerId }),
+
+  // 이벤트 로그
+  getEventLogs: (gameId: string) =>
+    axios.get(`${API_BASE}/games/${gameId}/logs`),
 };

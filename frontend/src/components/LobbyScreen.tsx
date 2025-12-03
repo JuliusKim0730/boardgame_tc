@@ -3,7 +3,7 @@ import { api } from '../services/api';
 import './LobbyScreen.css';
 
 interface Props {
-  onRoomCreated: (roomId: string, roomCode: string, userId: string, isHost: boolean) => void;
+  onRoomCreated: (roomId: string, roomCode: string, userId: string, playerId: string, isHost: boolean) => void;
 }
 
 function LobbyScreen({ onRoomCreated }: Props) {
@@ -24,10 +24,12 @@ function LobbyScreen({ onRoomCreated }: Props) {
 
     try {
       const response = await api.createRoom(nickname);
-      const { roomId, code, userId } = response.data;
+      const { roomId, code, userId, playerId } = response.data;
+      
+      console.log('방 생성 완료:', { roomId, code, userId, playerId });
       
       // 대기실로 이동
-      onRoomCreated(roomId, code, userId, true);
+      onRoomCreated(roomId, code, userId, playerId, true);
     } catch (err: any) {
       setError(err.response?.data?.error || '방 생성 실패');
     } finally {
@@ -46,10 +48,12 @@ function LobbyScreen({ onRoomCreated }: Props) {
 
     try {
       const response = await api.joinRoom(roomCode, nickname);
-      const { roomId, userId } = response.data;
+      const { roomId, userId, playerId } = response.data;
+      
+      console.log('방 참가 완료:', { roomId, userId, playerId });
       
       // 대기실로 이동
-      onRoomCreated(roomId, roomCode, userId, false);
+      onRoomCreated(roomId, roomCode, userId, playerId, false);
     } catch (err: any) {
       setError(err.response?.data?.error || '방 참여 실패');
     } finally {

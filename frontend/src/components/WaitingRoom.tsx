@@ -62,29 +62,13 @@ function WaitingRoom({ roomId, roomCode, userId, isHost, onGameStart, onBack }: 
   const loadRoomState = async () => {
     try {
       const response = await api.getRoomState(roomId);
-      const { players, slots: serverSlots } = response.data;
+      const { slots: serverSlots } = response.data;
       
-      // 서버에서 슬롯 정보가 있으면 사용, 없으면 플레이어 기반으로 생성
-      if (serverSlots) {
+      console.log('서버에서 받은 슬롯 정보:', serverSlots);
+      
+      // 서버에서 받은 슬롯 정보를 그대로 사용
+      if (serverSlots && serverSlots.length > 0) {
         setSlots(serverSlots);
-      } else {
-        // 기존 플레이어를 슬롯에 배치
-        const newSlots: Slot[] = Array(5).fill(null).map((_, index) => {
-          const player = players[index];
-          if (player) {
-            return {
-              index,
-              status: player.isAI ? 'ai' : 'user',
-              player: {
-                id: player.id,
-                nickname: player.nickname,
-                isHost: index === 0
-              }
-            };
-          }
-          return { index, status: 'user' };
-        });
-        setSlots(newSlots);
       }
     } catch (error) {
       console.error('방 상태 로드 실패:', error);

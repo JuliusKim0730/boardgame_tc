@@ -8,6 +8,34 @@ export class TurnService {
   setSocketIO(io: Server) {
     this.io = io;
   }
+
+  // 안전한 JSON 파싱 헬퍼 함수
+  private safeParseJSON(data: any, fieldName: string = 'data'): any {
+    if (!data) {
+      console.log(`${fieldName}이(가) null 또는 undefined입니다`);
+      return {};
+    }
+
+    if (typeof data === 'object') {
+      console.log(`${fieldName}은(는) 이미 객체입니다`);
+      return data;
+    }
+
+    if (typeof data === 'string') {
+      try {
+        const parsed = JSON.parse(data);
+        console.log(`${fieldName} 파싱 성공`);
+        return parsed;
+      } catch (error) {
+        console.error(`${fieldName} 파싱 실패:`, error);
+        console.error(`원본 데이터:`, data);
+        return {};
+      }
+    }
+
+    console.warn(`${fieldName}의 타입이 예상과 다릅니다:`, typeof data);
+    return {};
+  }
   // 결심 토큰 회복 체크 (7일차 시작 시)
   async checkResolveTokenRecovery(gameId: string): Promise<void> {
     const client = await pool.connect();
@@ -61,8 +89,19 @@ export class TurnService {
   }
   // 이동 처리
   async move(gameId: string, playerId: string, targetPosition: number): Promise<void> {
+    console.log('=== TurnService.move 호출 ===');
+    console.log('gameId:', gameId);
+    console.log('playerId:', playerId);
+    console.log('targetPosition:', targetPosition);
+    
     // Turn Lock 검증
-    turnManager.validateTurn(gameId, playerId);
+    try {
+      turnManager.validateTurn(gameId, playerId);
+      console.log('턴 검증 통과');
+    } catch (error) {
+      console.error('턴 검증 실패:', error);
+      throw error;
+    }
 
     const client = await pool.connect();
     try {
@@ -74,18 +113,30 @@ export class TurnService {
         [gameId, playerId]
       );
       
+      if (stateResult.rows.length === 0) {
+        throw new Error('플레이어 상태를 찾을 수 없습니다');
+      }
+      
       const currentPosition = stateResult.rows[0].position;
       const lastPosition = stateResult.rows[0].last_position;
       
+      console.log('현재 위치:', currentPosition);
+      console.log('이전 위치:', lastPosition);
+      console.log('목표 위치:', targetPosition);
+      
       // 연속 사용 금지 검증
       if (targetPosition === lastPosition) {
+        console.error('연속 사용 금지 위반');
         throw new Error('같은 칸을 연속으로 사용할 수 없습니다');
       }
       
       // 인접 칸 검증
       const adjacentPositions = this.getAdjacentPositions(currentPosition);
+      console.log('인접 칸 목록:', adjacentPositions);
+      
       if (!adjacentPositions.includes(targetPosition)) {
-        throw new Error('인접한 칸으로만 이동할 수 있습니다');
+        console.error('인접 칸 검증 실패');
+        throw new Error(`인접한 칸으로만 이동할 수 있습니다. 현재 위치: ${currentPosition}, 인접 칸: ${adjacentPositions.join(', ')}`);
       }
       
       // 위치 업데이트
@@ -94,6 +145,8 @@ export class TurnService {
         [targetPosition, currentPosition, gameId, playerId]
       );
       
+      console.log('위치 업데이트 완료');
+      
       // 이벤트 로그
       await client.query(
         'INSERT INTO event_logs (game_id, event_type, data) VALUES ($1, $2, $3)',
@@ -101,8 +154,10 @@ export class TurnService {
       );
       
       await client.query('COMMIT');
+      console.log('이동 처리 완료');
     } catch (error) {
       await client.query('ROLLBACK');
+      console.error('이동 처리 중 에러:', error);
       throw error;
     } finally {
       client.release();
@@ -111,8 +166,19 @@ export class TurnService {
 
   // 행동 처리 (1~6번)
   async performAction(gameId: string, playerId: string, actionType: number): Promise<any> {
+    console.log('=== TurnService.performAction 호출 ===');
+    console.log('gameId:', gameId);
+    console.log('playerId:', playerId);
+    console.log('actionType:', actionType);
+    
     // Turn Lock 검증
-    turnManager.validateTurn(gameId, playerId);
+    try {
+      turnManager.validateTurn(gameId, playerId);
+      console.log('턴 검증 통과');
+    } catch (error) {
+      console.error('턴 검증 실패:', error);
+      throw error;
+    }
 
     const client = await pool.connect();
     try {
@@ -132,55 +198,94 @@ export class TurnService {
       const playerCount = parseInt(playerCountResult.rows[0].count);
       const is2Player = playerCount === 2;
 
-      let result;
+      let result: any = { success: true };
+      
       switch (actionType) {
-        case 1: // 무료 계획
+        case 1: // 무료 계획 - 무료계획 카드 1장 뽑기
           result = await this.drawCard(client, gameId, playerState.id, 'freeplan');
+          result.message = `무료 계획 카드 "${result.card.name}"를 획득했습니다!`;
           break;
-        case 2: // 조사하기
+          
+        case 2: // 조사하기 - 계획 카드 1장 뽑기
+          console.log('조사하기 행동 시작');
+          console.log('playerState.id:', playerState.id);
           result = await this.drawCard(client, gameId, playerState.id, 'plan');
+          console.log('카드 뽑기 완료:', result.card);
+          result.message = `계획 카드 "${result.card.name}"를 획득했습니다!`;
           break;
-        case 3: // 집안일 (1,500~2,000TC)
+          
+        case 3: // 집안일 - 집안일 카드 뽑기 + 돈/추억점수 획득
           result = await this.drawCard(client, gameId, playerState.id, 'house');
-          await this.applyMoneyEffect(client, playerState.id, result.card.effects.money || 0);
+          const houseEffects = this.safeParseJSON(result.card.effects, 'house.effects');
+          
+          const houseMoney = houseEffects.money || 0;
+          const houseMemory = houseEffects.memory || 0;
+          
+          console.log('집안일 효과:', { money: houseMoney, memory: houseMemory });
+          
+          await this.applyMoneyEffect(client, playerState.id, houseMoney);
+          
+          if (houseMemory > 0) {
+            await client.query(
+              'UPDATE player_states SET traits = jsonb_set(traits, \'{추억}\', to_jsonb((COALESCE((traits->>\'추억\')::int, 0) + $1)::int)) WHERE id = $2',
+              [houseMemory, playerState.id]
+            );
+          }
+          
+          result.message = `집안일 완료! +${houseMoney}TC`;
+          if (houseMemory > 0) result.message += `, +${houseMemory} 추억점수`;
           
           // 2인 전용: 첫 방문 시 +500TC
           if (is2Player) {
             const firstVisitResult = await client.query(
               'SELECT COUNT(*) as count FROM event_logs WHERE game_id = $1 AND event_type = $2 AND data->>\'playerId\' = $3',
-              [gameId, 'action_house', playerId]
+              [gameId, 'action_3', playerId]
             );
             if (parseInt(firstVisitResult.rows[0].count) === 0) {
               await this.applyMoneyEffect(client, playerState.id, 500);
+              result.message += ' (첫 방문 보너스 +500TC)';
             }
           }
           break;
-        case 4: // 여행 지원 (구 투자)
+          
+        case 4: // 여행 지원 - 여행지원 카드 뽑기 + 효과 적용
           result = await this.drawCard(client, gameId, playerState.id, 'support');
-          await this.applyMoneyEffect(client, playerState.id, result.card.effects.money || 0);
+          const supportEffects = this.safeParseJSON(result.card.effects, 'support.effects');
+          
+          const supportMoney = supportEffects.money || 0;
+          
+          console.log('여행 지원 효과:', { money: supportMoney });
+          
+          if (supportMoney !== 0) {
+            await this.applyMoneyEffect(client, playerState.id, supportMoney);
+            result.message = `여행 지원 "${result.card.name}" - ${supportMoney > 0 ? '+' : ''}${supportMoney}TC`;
+          } else {
+            result.message = `여행 지원 "${result.card.name}" 획득!`;
+          }
           break;
-        case 5: // 찬스
-          // 2인 전용: 찬스 카드 OR 500TC 선택
+          
+        case 5: // 찬스 - 2인: 선택 모달, 다인: 찬스 카드
           if (is2Player) {
-            // 선택은 프론트엔드에서 처리, 여기서는 기본 로직만
-            result = await this.drawCard(client, gameId, playerState.id, 'chance');
+            // 2인 전용: 프론트엔드에서 선택 처리
+            result.requiresChoice = true;
+            result.message = '찬스 카드 또는 500TC를 선택하세요';
           } else {
             result = await this.drawCard(client, gameId, playerState.id, 'chance');
+            result.message = `찬스 카드 "${result.card.name}"를 획득했습니다!`;
           }
-          // 찬스 카드는 별도 처리 필요
           break;
-        case 6: // 자유 행동
-          if (playerState.resolve_token <= 0) {
-            throw new Error('결심 토큰이 없습니다');
-          }
-          // 결심 토큰 사용은 별도 처리
+          
+        case 6: // 자유 행동 - 1~5번 중 선택 가능
+          // 프론트엔드에서 추가 선택 처리
+          result.requiresFreeChoice = true;
+          result.message = '1~5번 행동 중 하나를 선택하세요';
           break;
       }
       
       // 행동 로그 기록
       await client.query(
         'INSERT INTO event_logs (game_id, event_type, data) VALUES ($1, $2, $3)',
-        [gameId, `action_${actionType}`, JSON.stringify({ playerId, actionType })]
+        [gameId, `action_${actionType}`, JSON.stringify({ playerId, actionType, result })]
       );
       
       await client.query('COMMIT');
@@ -193,7 +298,7 @@ export class TurnService {
         );
         const roomId = roomResult.rows[0].room_id;
         
-        this.io.to(roomId).emit('state-updated', {
+        this.io.to(roomId).emit('action-completed', {
           playerId,
           actionType,
           result
@@ -210,40 +315,114 @@ export class TurnService {
   }
 
   private async drawCard(client: any, gameId: string, playerStateId: string, deckType: string) {
+    console.log('=== drawCard 호출 ===');
+    console.log('gameId:', gameId);
+    console.log('playerStateId:', playerStateId);
+    console.log('deckType:', deckType);
+    
     // 덱에서 카드 드로우
     const deckResult = await client.query(
       'SELECT card_order FROM decks WHERE game_id = $1 AND type = $2',
       [gameId, deckType]
     );
     
-    const cardOrder = JSON.parse(deckResult.rows[0].card_order);
+    if (deckResult.rows.length === 0) {
+      console.error(`${deckType} 덱을 찾을 수 없습니다`);
+      throw new Error(`${deckType} 덱을 찾을 수 없습니다`);
+    }
+    
+    let cardOrder;
+    try {
+      const rawCardOrder = deckResult.rows[0].card_order;
+      console.log('원본 card_order 타입:', typeof rawCardOrder);
+      console.log('원본 card_order 값:', rawCardOrder);
+      
+      if (typeof rawCardOrder === 'string') {
+        cardOrder = JSON.parse(rawCardOrder);
+      } else if (Array.isArray(rawCardOrder)) {
+        cardOrder = rawCardOrder;
+      } else {
+        console.error('card_order가 예상치 못한 타입입니다:', typeof rawCardOrder);
+        throw new Error('덱 데이터 형식 오류');
+      }
+    } catch (error) {
+      console.error('card_order 파싱 실패:', error);
+      throw new Error('덱 데이터 파싱 실패');
+    }
+    
+    console.log('파싱된 덱 카드 수:', cardOrder.length);
+    console.log('덱 카드 ID 목록:', cardOrder);
+    
     if (cardOrder.length === 0) {
-      throw new Error('덱에 카드가 없습니다');
+      console.error(`${deckType} 덱에 카드가 없습니다`);
+      throw new Error(`${deckType} 덱에 카드가 없습니다`);
     }
     
     const cardId = cardOrder.shift();
+    console.log('뽑은 카드 ID:', cardId);
+    console.log('남은 카드 ID 목록:', cardOrder);
     
     // 덱 업데이트
     await client.query(
       'UPDATE decks SET card_order = $1 WHERE game_id = $2 AND type = $3',
       [JSON.stringify(cardOrder), gameId, deckType]
     );
+    console.log('덱 업데이트 완료, 남은 카드:', cardOrder.length);
     
     // 카드 정보 조회
     const cardResult = await client.query('SELECT * FROM cards WHERE id = $1', [cardId]);
-    const card = cardResult.rows[0];
+    if (cardResult.rows.length === 0) {
+      console.error(`카드 ID ${cardId}를 찾을 수 없습니다`);
+      throw new Error(`카드 ID ${cardId}를 찾을 수 없습니다`);
+    }
     
-    // 손패에 추가 (집안일/투자/찬스는 즉시 사용)
+    const card = cardResult.rows[0];
+    console.log('카드 정보:', { id: card.id, name: card.name, type: card.type, code: card.code });
+    
+    // 손패에 추가 (plan, freeplan만)
     if (['plan', 'freeplan'].includes(deckType)) {
+      console.log('손패에 추가 중...');
+      console.log('playerStateId:', playerStateId);
+      console.log('cardId:', cardId);
+      
       const seqResult = await client.query(
         'SELECT COALESCE(MAX(seq), -1) + 1 as next_seq FROM hands WHERE player_state_id = $1',
         [playerStateId]
       );
       
-      await client.query(
-        'INSERT INTO hands (player_state_id, card_id, seq) VALUES ($1, $2, $3)',
-        [playerStateId, cardId, seqResult.rows[0].next_seq]
-      );
+      const nextSeq = seqResult.rows[0].next_seq;
+      console.log('다음 seq:', nextSeq);
+      
+      try {
+        const insertResult = await client.query(
+          'INSERT INTO hands (player_state_id, card_id, seq) VALUES ($1, $2, $3) RETURNING *',
+          [playerStateId, cardId, nextSeq]
+        );
+        console.log('✅ 손패 추가 완료:', insertResult.rows[0]);
+        
+        // 손패 확인
+        const verifyResult = await client.query(
+          'SELECT COUNT(*) as count FROM hands WHERE player_state_id = $1',
+          [playerStateId]
+        );
+        console.log('✅ 현재 손패 카드 수:', verifyResult.rows[0].count);
+        
+        // 추가된 카드 상세 확인
+        const cardCheckResult = await client.query(
+          `SELECT h.id, h.seq, c.name, c.code 
+           FROM hands h 
+           JOIN cards c ON h.card_id = c.id 
+           WHERE h.player_state_id = $1 
+           ORDER BY h.seq`,
+          [playerStateId]
+        );
+        console.log('✅ 손패 카드 목록:', cardCheckResult.rows);
+      } catch (error) {
+        console.error('❌ 손패 추가 실패:', error);
+        throw error;
+      }
+    } else {
+      console.log('즉시 사용 카드, 손패에 추가하지 않음');
     }
     
     return { card };
@@ -258,12 +437,12 @@ export class TurnService {
 
   private getAdjacentPositions(position: number): number[] {
     const adjacency: { [key: number]: number[] } = {
-      1: [2],
-      2: [1, 3, 4],
-      3: [2, 5],
-      4: [2, 6],
-      5: [3, 6],
-      6: [4, 5]
+      1: [2, 3],      // 무료계획 → 조사하기, 집안일
+      2: [1, 4],      // 조사하기 → 무료계획, 여행지원
+      3: [1, 5],      // 집안일 → 무료계획, 찬스
+      4: [2, 5, 6],   // 여행지원 → 조사하기, 찬스, 자유행동
+      5: [3, 4, 6],   // 찬스 → 집안일, 여행지원, 자유행동
+      6: [4, 5]       // 자유행동 → 여행지원, 찬스
     };
     return adjacency[position] || [];
   }

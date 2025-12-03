@@ -25,33 +25,60 @@ export class GameSetupService {
       );
       const gameId = gameResult.rows[0].id;
       
-      // 플레이어 목록 조회
+      // 플레이어 목록 조회 (슬롯 순서대로 = created_at 순서)
       const playersResult = await client.query(
-        'SELECT id FROM players WHERE room_id = $1',
+        `SELECT p.id, p.user_id, u.nickname, p.created_at
+         FROM players p 
+         JOIN users u ON p.user_id = u.id
+         WHERE p.room_id = $1 
+         ORDER BY p.created_at ASC`,
         [roomId]
       );
       const players = playersResult.rows;
       const playerCount = players.length;
       
-      // 선플레이어 랜덤 결정
-      const shuffledPlayers = [...players].sort(() => Math.random() - 0.5);
+      console.log('=== 게임 설정 시작 ===');
+      console.log('플레이어 목록:', players.map((p, i) => ({
+        index: i,
+        player_id: p.id,
+        user_id: p.user_id,
+        nickname: p.nickname,
+        created_at: p.created_at,
+        turn_order: i
+      })));
+      
+      // 슬롯 순서대로 턴 순서 결정 (랜덤 섞기 제거)
+      const orderedPlayers = players;
+      
+      // 여행지 카드 준비 (각 플레이어에게 1장씩 배분)
+      const travelCards = await this.getCardsByType('travel');
+      const shuffledTravelCards = [...travelCards].sort(() => Math.random() - 0.5);
       
       // 플레이어 상태 초기화 (초기 자금 3,000TC, 결심 토큰 1개)
-      for (let i = 0; i < shuffledPlayers.length; i++) {
+      for (let i = 0; i < orderedPlayers.length; i++) {
         const playerStateResult = await client.query(
           `INSERT INTO player_states 
            (game_id, player_id, money, position, resolve_token, turn_order) 
            VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-          [gameId, shuffledPlayers[i].id, 3000, 1, 1, i]
+          [gameId, orderedPlayers[i].id, 3000, 1, 1, i]
         );
         
-        // 초기 계획 카드 1장 드로우
+        const playerStateId = playerStateResult.rows[0].id;
+        
+        // 여행지 카드 1장 배분 (공개)
+        const travelCard = shuffledTravelCards[i % shuffledTravelCards.length];
+        await client.query(
+          'INSERT INTO purchased (player_state_id, card_id, price_paid) VALUES ($1, $2, $3)',
+          [playerStateId, travelCard.id, 0]
+        );
+        
+        // 초기 일반 계획 카드 1장 드로우
         const planCards = await this.getCardsByType('plan');
         const randomCard = planCards[Math.floor(Math.random() * planCards.length)];
         
         await client.query(
           'INSERT INTO hands (player_state_id, card_id, seq) VALUES ($1, $2, $3)',
-          [playerStateResult.rows[0].id, randomCard.id, 0]
+          [playerStateId, randomCard.id, 0]
         );
       }
       
@@ -70,17 +97,23 @@ export class GameSetupService {
         await this.initializeDeck(client, gameId, 'chance');
       }
       
-      // 여행지 카드 1장 오픈
-      const travelCards = await this.getCardsByType('travel');
-      const travelCard = travelCards[Math.floor(Math.random() * travelCards.length)];
-      
-      // 공동 계획 카드 1장 오픈
+      // 공동 목표 카드 1장 오픈
       const jointCards = await this.getCardsByType('joint');
       const jointCard = jointCards[Math.floor(Math.random() * jointCards.length)];
       
+      // 첫 번째 플레이어 = 선 플레이어 (방장)
+      const firstPlayer = orderedPlayers[0];
+      
+      console.log('선 플레이어:', {
+        player_id: firstPlayer.id,
+        user_id: firstPlayer.user_id,
+        nickname: firstPlayer.nickname,
+        turn_order: 0
+      });
+      
       await client.query(
-        'UPDATE games SET travel_theme = $1, joint_plan_card_id = $2, status = $3, current_turn_player_id = $4 WHERE id = $5',
-        [travelCard.code, jointCard.id, 'running', shuffledPlayers[0].id, gameId]
+        'UPDATE games SET joint_plan_card_id = $1, status = $2, current_turn_player_id = $3 WHERE id = $4',
+        [jointCard.id, 'running', firstPlayer.id, gameId]
       );
       
       // 방 상태 업데이트
@@ -89,11 +122,10 @@ export class GameSetupService {
         ['in_progress', roomId]
       );
       
-      // 첫 턴 시작 (선플레이어)
-      const firstPlayerId = shuffledPlayers[0].id;
+      // 첫 턴 시작 (선플레이어 = 1번 슬롯 = 방장)
       const firstPlayerStateResult = await client.query(
         'SELECT id FROM player_states WHERE game_id = $1 AND player_id = $2',
-        [gameId, firstPlayerId]
+        [gameId, firstPlayer.id]
       );
       
       await client.query(
@@ -101,7 +133,20 @@ export class GameSetupService {
         [gameId, 1, firstPlayerStateResult.rows[0].id]
       );
       
+      console.log('게임 설정 완료:', {
+        gameId,
+        firstPlayerId: firstPlayer.id,
+        firstPlayerNickname: firstPlayer.nickname,
+        playerCount
+      });
+      
       await client.query('COMMIT');
+      
+      // 턴 락 설정 (COMMIT 후에 설정)
+      const { turnManager } = await import('./TurnManager');
+      turnManager.lockTurn(gameId, firstPlayer.id);
+      console.log('첫 턴 락 설정 완료:', { gameId, playerId: firstPlayer.id });
+      
       return gameId;
     } catch (error) {
       await client.query('ROLLBACK');

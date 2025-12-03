@@ -1,0 +1,83 @@
+.action-log {
+  background: white;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  max-height: 400px;
+  display: flex;
+  flex-direction: column;
+}
+
+.action-log h3 {
+  margin: 0 0 12px 0;
+  font-size: 16px;
+  color: #1f2937;
+  border-bottom: 2px solid #e5e7eb;
+  padding-bottom: 8px;
+}
+
+.log-entries {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.log-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  background: #f9fafb;
+  border-radius: 8px;
+  font-size: 13px;
+  transition: background 0.2s;
+}
+
+.log-entry:hover {
+  background: #f3f4f6;
+}
+
+.log-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.log-text {
+  flex: 1;
+  color: #374151;
+}
+
+.log-time {
+  font-size: 11px;
+  color: #9ca3af;
+  flex-shrink: 0;
+}
+
+.log-loading,
+.log-empty {
+  text-align: center;
+  padding: 24px;
+  color: #9ca3af;
+  font-size: 14px;
+}
+
+/* 스크롤바 스타일 */
+.log-entries::-webkit-scrollbar {
+  width: 6px;
+}
+
+.log-entries::-webkit-scrollbar-track {
+  background: #f3f4f6;
+  border-radius: 3px;
+}
+
+.log-entries::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 3px;
+}
+
+.log-entries::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
