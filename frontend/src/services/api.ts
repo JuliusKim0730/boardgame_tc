@@ -72,4 +72,17 @@ export const api = {
 
   getRoom: (roomId: string) =>
     axios.get(`${API_BASE}/rooms/${roomId}`),
+
+  getGameState: (gameId: string) =>
+    axios.get(`${API_BASE}/games/${gameId}/state`),
+
+  getPlayerState: (gameId: string, playerId: string) =>
+    axios.get(`${API_BASE}/games/${gameId}/players/${playerId}`),
+
+  // 슬롯 관리
+  updateSlot: (roomId: string, slotIndex: number, action: 'user' | 'ai' | 'ban') =>
+    axios.post(`${API_BASE}/rooms/${roomId}/slots/${slotIndex}`, { action }),
+
+  kickPlayer: (roomId: string, playerId: string) =>
+    axios.post(`${API_BASE}/rooms/${roomId}/kick`, { playerId }),
 };

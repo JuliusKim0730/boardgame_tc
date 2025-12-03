@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: boardgame-backend
+    env: node
+    region: singapore
+    plan: free
+    buildCommand: cd backend && npm install && npm run build
+    startCommand: cd backend && npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: DATABASE_URL
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: CLIENT_URL
+        sync: false

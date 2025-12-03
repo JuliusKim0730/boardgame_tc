@@ -170,7 +170,7 @@ export class TurnService {
           // 찬스 카드는 별도 처리 필요
           break;
         case 6: // 자유 행동
-          if (!playerState.resolve_token) {
+          if (playerState.resolve_token <= 0) {
             throw new Error('결심 토큰이 없습니다');
           }
           // 결심 토큰 사용은 별도 처리

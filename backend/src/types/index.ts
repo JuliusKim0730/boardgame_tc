@@ -2,9 +2,9 @@
 export type RoomStatus = 'waiting' | 'in_progress';
 export type GameStatus = 'setting' | 'running' | 'finalizing' | 'finished';
 export type PlayerStatus = 'active' | 'afk' | 'left' | 'bot';
-export type DeckType = 'plan' | 'freeplan' | 'house' | 'invest' | 'chance' | 'joint' | 'travel' | 'support';
-export type CardType = 'plan' | 'freeplan' | 'house' | 'invest' | 'chance' | 'joint' | 'travel' | 'support';
-export type ActionKind = 'move' | 'draw' | 'chance' | 'free_action' | 'invest' | 'house' | 'contribute';
+export type DeckType = 'plan' | 'freeplan' | 'house' | 'support' | 'chance' | 'joint' | 'travel';
+export type CardType = 'plan' | 'freeplan' | 'house' | 'support' | 'chance' | 'joint' | 'travel';
+export type ActionKind = 'move' | 'draw' | 'chance' | 'free_action' | 'support' | 'house' | 'contribute';
 
 export interface Traits {
   taste: number;      // 맛
@@ -46,7 +46,7 @@ export interface PlayerState {
   playerId: string;
   money: number;
   position: number;
-  resolveToken: boolean;
+  resolveToken: number; // 0~2 (결심 토큰 개수)
   traits: Traits;
   turnOrder: number;
   status: PlayerStatus;

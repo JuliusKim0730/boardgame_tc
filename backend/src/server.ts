@@ -80,11 +80,16 @@ app.get('/', (req, res) => {
   });
 });
 
+// AI 스케줄러 시작
+import { aiScheduler } from './services/AIScheduler';
+aiScheduler.start();
+
 // 서버 시작
 const PORT = process.env.PORT || 10000;
 httpServer.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📡 WebSocket ready`);
+  console.log(`🤖 AI Scheduler started`);
   console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
 });
 

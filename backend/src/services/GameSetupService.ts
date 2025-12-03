@@ -36,7 +36,7 @@ export class GameSetupService {
       // 선플레이어 랜덤 결정
       const shuffledPlayers = [...players].sort(() => Math.random() - 0.5);
       
-      // 플레이어 상태 초기화 (초기 자금 3,000TC로 변경)
+      // 플레이어 상태 초기화 (초기 자금 3,000TC, 결심 토큰 1개)
       for (let i = 0; i < shuffledPlayers.length; i++) {
         const playerStateResult = await client.query(
           `INSERT INTO player_states 

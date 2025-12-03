@@ -102,4 +102,47 @@ router.post('/rooms/:roomId/soft-reset', async (req, res) => {
   }
 });
 
+// 슬롯 업데이트
+router.post('/rooms/:roomId/slots/:slotIndex', async (req, res) => {
+  try {
+    const { roomId, slotIndex } = req.params;
+    const { action } = req.body; // 'user' | 'ai' | 'ban'
+    
+    const index = parseInt(slotIndex);
+    if (isNaN(index) || index < 0 || index > 4) {
+      return res.status(400).json({ error: '잘못된 슬롯 인덱스입니다' });
+    }
+
+    await roomService.updateSlot(roomId, index, action);
+    
+    // WebSocket으로 슬롯 업데이트 알림
+    if (io) {
+      io.to(roomId).emit('slot-updated', { slotIndex: index, action });
+    }
+    
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// 플레이어 강퇴
+router.post('/rooms/:roomId/kick', async (req, res) => {
+  try {
+    const { roomId } = req.params;
+    const { playerId } = req.body;
+    
+    await roomService.kickPlayer(roomId, playerId);
+    
+    // WebSocket으로 강퇴 알림
+    if (io) {
+      io.to(roomId).emit('player-kicked', { playerId });
+    }
+    
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
 export default router;

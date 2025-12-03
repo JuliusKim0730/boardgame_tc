@@ -127,6 +127,12 @@ function ResultScreen({ gameId, roomId, playerId, onRestart, onBackToLobby }: Pr
     };
   };
 
+  const getMaxConversions = (): number => {
+    const minorTraits = getMinorTraits();
+    const totalMinorPoints = Object.values(minorTraits).reduce((sum, val) => sum + val, 0);
+    return Math.floor(totalMinorPoints / 3);
+  };
+
   const handleRestart = async () => {
     try {
       await api.resultClosed(gameId, playerId);
@@ -154,6 +160,7 @@ function ResultScreen({ gameId, roomId, playerId, onRestart, onBackToLobby }: Pr
           isOpen={true}
           minorTraits={getMinorTraits()}
           multipliers={getTravelMultipliers()}
+          maxConversions={getMaxConversions()}
           onConfirm={handleTraitConversion}
           onCancel={handleSkipConversion}
         />

@@ -5,6 +5,8 @@ import GameBoard from './GameBoard';
 import PlayerInfo from './PlayerInfo';
 import HandCards from './HandCards';
 import ChanceOptionModal from './ChanceOptionModal';
+import ContributeModal from './ContributeModal';
+import ResultScreen from './ResultScreen';
 import './GameScreen.css';
 
 interface Props {
@@ -15,17 +17,78 @@ interface Props {
   onBackToLobby: () => void;
 }
 
+interface PlayerState {
+  id: string;
+  money: number;
+  position: number;
+  resolve_token: number;
+  traits: any;
+  hand_cards?: any[];
+}
+
+interface GameState {
+  day: number;
+  currentTurnPlayerId: string | null;
+  status: string;
+  travelTheme: string | null;
+  jointPlanCardId: string | null;
+}
+
 function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
-  const [currentDay] = useState(1);
-  const [currentTurnPlayer, setCurrentTurnPlayer] = useState<string | null>(null);
-  const [playerState] = useState<any>(null);
-  const [selectedPosition, setSelectedPosition] = useState<number | null>(null);
+  const [gameState, setGameState] = useState<GameState>({
+    day: 1,
+    currentTurnPlayerId: null,
+    status: 'running',
+    travelTheme: null,
+    jointPlanCardId: null
+  });
+  const [playerState, setPlayerState] = useState<PlayerState | null>(null);
+  const [allPlayers, setAllPlayers] = useState<any[]>([]);
+  const [_selectedPosition, setSelectedPosition] = useState<number | null>(null);
   const [message, setMessage] = useState('게임을 시작합니다!');
   const [is2Player, setIs2Player] = useState(false);
   const [showChanceOption, setShowChanceOption] = useState(false);
+  const [showContributeModal, setShowContributeModal] = useState(false);
+  const [showResult, setShowResult] = useState(false);
   const [isFirstHouseVisit, setIsFirstHouseVisit] = useState(true);
+  const [hasMoved, setHasMoved] = useState(false);
+  const [hasActed, setHasActed] = useState(false);
+
+  // 게임 상태 로드
+  const loadGameState = async () => {
+    try {
+      const response = await api.getGameState(gameId);
+      const { game, players } = response.data;
+      
+      setGameState({
+        day: game.day,
+        currentTurnPlayerId: game.currentTurnPlayerId,
+        status: game.status,
+        travelTheme: game.travelTheme,
+        jointPlanCardId: game.jointPlanCardId
+      });
+      
+      setAllPlayers(players);
+      
+      // 내 플레이어 상태 찾기
+      const myState = players.find((p: any) => p.player_id === playerId);
+      if (myState) {
+        setPlayerState(myState);
+      }
+      
+      // 게임 종료 체크
+      if (game.status === 'finished') {
+        setShowResult(true);
+      }
+    } catch (error) {
+      console.error('Failed to load game state:', error);
+    }
+  };
 
   useEffect(() => {
+    // 초기 로드
+    loadGameState();
+    
     // 플레이어 수 확인 (2인 플레이 감지)
     const fetchPlayers = async () => {
       try {
@@ -44,23 +107,43 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
     const socket = socketService.connect(roomId);
 
     socket.on('turn-started', (data: any) => {
-      setCurrentTurnPlayer(data.playerId);
+      setGameState(prev => ({ ...prev, currentTurnPlayerId: data.playerId, day: data.day }));
+      setHasMoved(false);
+      setHasActed(false);
+      setSelectedPosition(null);
+      
       if (data.playerId === playerId) {
         setMessage('당신의 턴입니다! 이동할 칸을 선택하세요.');
       } else {
         setMessage('다른 플레이어의 턴입니다...');
       }
+      
+      loadGameState();
     });
 
-    socket.on('state-updated', (state: any) => {
-      // 게임 상태 업데이트
-      console.log('State updated:', state);
+    socket.on('state-updated', () => {
+      loadGameState();
+    });
+
+    socket.on('player-moved', (data: any) => {
+      if (data.playerId === playerId) {
+        setHasMoved(true);
+        setMessage('행동을 선택하세요 (1~6번)');
+      }
+      loadGameState();
+    });
+
+    socket.on('action-completed', (data: any) => {
+      if (data.playerId === playerId) {
+        setHasActed(true);
+      }
+      loadGameState();
     });
 
     socket.on('chance-request', (data: any) => {
-      // 찬스 카드 상호작용 요청
-      console.log('Chance request:', data);
-      setMessage(data.message);
+      if (data.targetPlayerId === playerId) {
+        setMessage(data.message);
+      }
     });
 
     socket.on('house-first-visit-bonus', (data: any) => {
@@ -74,31 +157,61 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
       if (data.playerId === playerId) {
         setMessage(`🔥 결심 토큰 회복! (${data.newCount}개)`);
       }
+      loadGameState();
+    });
+
+    socket.on('game-ended', () => {
+      setMessage('게임이 종료되었습니다! 최종 정산 중...');
+      setTimeout(() => {
+        setShowResult(true);
+      }, 2000);
+    });
+
+    socket.on('day-7-started', () => {
+      setMessage('📅 7일차 시작! 결심 토큰 회복 체크 중...');
+      api.checkResolveRecovery(gameId).catch(console.error);
     });
 
     return () => {
       socketService.disconnect();
     };
-  }, [roomId, playerId]);
+  }, [roomId, playerId, gameId]);
 
   const handleMove = async (position: number) => {
-    if (currentTurnPlayer !== playerId) {
+    if (gameState.currentTurnPlayerId !== playerId) {
       setMessage('당신의 턴이 아닙니다!');
+      return;
+    }
+
+    if (hasMoved) {
+      setMessage('이미 이동했습니다!');
       return;
     }
 
     try {
       await api.move(gameId, playerId, position);
       setSelectedPosition(position);
+      setHasMoved(true);
       setMessage('행동을 선택하세요 (1~6번)');
+      loadGameState();
     } catch (error: any) {
       setMessage(error.response?.data?.error || '이동 실패');
     }
   };
 
   const handleAction = async (actionType: number) => {
-    if (currentTurnPlayer !== playerId) {
+    if (gameState.currentTurnPlayerId !== playerId) {
       setMessage('당신의 턴이 아닙니다!');
+      return;
+    }
+
+    if (!hasMoved) {
+      setMessage('먼저 이동해야 합니다!');
+      return;
+    }
+
+    if (hasActed) {
+      setMessage('이미 행동했습니다!');
       return;
     }
 
@@ -109,7 +222,8 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
     }
 
     try {
-      await api.performAction(gameId, playerId, actionType);
+      const response = await api.performAction(gameId, playerId, actionType);
+      setHasActed(true);
       setMessage(`행동 완료: ${getActionName(actionType)}`);
       
       // 집안일 첫 방문 체크
@@ -118,11 +232,24 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
         setIsFirstHouseVisit(false);
       }
       
-      // 턴 종료
+      loadGameState();
+      
+      // 찬스 카드 획득 시 알림
+      if (response.data?.card) {
+        setMessage(`🎴 ${response.data.card.name} 카드를 획득했습니다!`);
+      }
+      
+      // 자동 턴 종료
       setTimeout(async () => {
-        await api.endTurn(gameId, playerId);
-        setMessage('턴이 종료되었습니다.');
-      }, 1000);
+        try {
+          await api.endTurn(gameId, playerId);
+          setMessage('턴이 종료되었습니다.');
+          setHasMoved(false);
+          setHasActed(false);
+        } catch (error: any) {
+          setMessage(error.response?.data?.error || '턴 종료 실패');
+        }
+      }, 1500);
     } catch (error: any) {
       setMessage(error.response?.data?.error || '행동 실패');
     }
@@ -132,21 +259,41 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
     setShowChanceOption(false);
     
     try {
-      await api.selectChanceOption(gameId, playerId, option);
+      const response = await api.selectChanceOption(gameId, playerId, option);
+      setHasActed(true);
       
       if (option === 'money') {
         setMessage(`💰 500TC를 획득했습니다!`);
       } else {
-        setMessage(`🎴 찬스 카드를 획득했습니다!`);
+        setMessage(`🎴 ${response.data?.card?.name || '찬스 카드'}를 획득했습니다!`);
       }
       
-      // 턴 종료
+      loadGameState();
+      
+      // 자동 턴 종료
       setTimeout(async () => {
-        await api.endTurn(gameId, playerId);
-        setMessage('턴이 종료되었습니다.');
-      }, 1000);
+        try {
+          await api.endTurn(gameId, playerId);
+          setMessage('턴이 종료되었습니다.');
+          setHasMoved(false);
+          setHasActed(false);
+        } catch (error: any) {
+          setMessage(error.response?.data?.error || '턴 종료 실패');
+        }
+      }, 1500);
     } catch (error: any) {
       setMessage(error.response?.data?.error || '선택 실패');
+    }
+  };
+
+  const handleContribute = async (amount: number) => {
+    try {
+      await api.contribute(gameId, playerId, amount);
+      setMessage(`공동 계획에 ${amount.toLocaleString()}TC 기여했습니다!`);
+      setShowContributeModal(false);
+      loadGameState();
+    } catch (error: any) {
+      setMessage(error.response?.data?.error || '기여 실패');
     }
   };
 
@@ -155,14 +302,37 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
     return names[type] || '알 수 없음';
   };
 
-  const isMyTurn = currentTurnPlayer === playerId;
+  const isMyTurn = gameState.currentTurnPlayerId === playerId;
+
+  if (showResult) {
+    return (
+      <ResultScreen
+        gameId={gameId}
+        roomId={roomId}
+        playerId={playerId}
+        onRestart={() => {
+          setShowResult(false);
+          loadGameState();
+        }}
+        onBackToLobby={onBackToLobby}
+      />
+    );
+  }
 
   return (
     <div className="game-screen">
       <div className="game-header">
         <div className="game-info">
           <h2>🌙 열네 밤의 꿈</h2>
-          <div className="day-counter">Day {currentDay} / 14</div>
+          <div className="day-counter">
+            Day {gameState.day} / 14
+            {is2Player && <span className="mode-badge">2인 모드</span>}
+          </div>
+          {gameState.travelTheme && (
+            <div className="travel-theme">
+              여행지: {gameState.travelTheme}
+            </div>
+          )}
         </div>
         <button className="btn-exit" onClick={onBackToLobby}>
           나가기
@@ -171,23 +341,47 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
 
       <div className="message-bar">
         <p>{message}</p>
+        {isMyTurn && (
+          <div className="turn-status">
+            {!hasMoved && '🎯 이동 필요'}
+            {hasMoved && !hasActed && '⚡ 행동 필요'}
+            {hasMoved && hasActed && '✅ 완료'}
+          </div>
+        )}
       </div>
 
       <div className="game-content">
         <div className="left-panel">
           <PlayerInfo
-            money={playerState?.money || 2000}
+            money={playerState?.money || 3000}
             position={playerState?.position || 1}
-            resolveToken={playerState?.resolveToken || true}
+            resolveToken={playerState?.resolve_token || 1}
             traits={playerState?.traits || {}}
           />
+          
+          <div className="other-players">
+            <h3>다른 플레이어</h3>
+            {allPlayers
+              .filter(p => p.player_id !== playerId)
+              .map(p => (
+                <div key={p.id} className="other-player-item">
+                  <div className="player-name">
+                    {p.nickname || `플레이어 ${p.turn_order + 1}`}
+                    {gameState.currentTurnPlayerId === p.player_id && ' 🎯'}
+                  </div>
+                  <div className="player-stats">
+                    💰 {p.money?.toLocaleString()}TC | 📍 {p.position}번
+                  </div>
+                </div>
+              ))}
+          </div>
         </div>
 
         <div className="center-panel">
           <GameBoard
             currentPosition={playerState?.position || 1}
             onPositionClick={handleMove}
-            disabled={!isMyTurn}
+            disabled={!isMyTurn || hasMoved}
           />
 
           <div className="action-buttons">
@@ -198,7 +392,7 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
                   key={action}
                   className="btn-action"
                   onClick={() => handleAction(action)}
-                  disabled={!isMyTurn || selectedPosition === null}
+                  disabled={!isMyTurn || !hasMoved || hasActed}
                 >
                   {action}. {getActionName(action)}
                 </button>
@@ -208,14 +402,20 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
         </div>
 
         <div className="right-panel">
-          <HandCards cards={[]} />
+          <HandCards cards={playerState?.hand_cards || []} />
           
-          <div className="joint-plan-section">
+          <div className="joint-plan-section card">
             <h3>공동 계획</h3>
             <div className="joint-plan-info">
-              <p>목표: 10,000원</p>
-              <p>현재: 0원</p>
-              <button className="btn-contribute">기여하기</button>
+              <p>목표: 10,000TC</p>
+              <p>현재: 진행 중</p>
+              <button 
+                className="btn-contribute"
+                onClick={() => setShowContributeModal(true)}
+                disabled={!playerState || playerState.money < 1000}
+              >
+                기여하기
+              </button>
             </div>
           </div>
         </div>
@@ -225,6 +425,16 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
         isOpen={showChanceOption}
         onSelect={handleChanceOptionSelect}
       />
+
+      {showContributeModal && (
+        <ContributeModal
+          currentMoney={playerState?.money || 0}
+          targetAmount={10000}
+          currentAmount={0}
+          onContribute={handleContribute}
+          onClose={() => setShowContributeModal(false)}
+        />
+      )}
     </div>
   );
 }

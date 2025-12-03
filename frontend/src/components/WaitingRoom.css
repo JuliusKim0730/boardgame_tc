@@ -1,115 +1,308 @@
 .waiting-room-container {
   width: 100%;
-  max-width: 600px;
+  max-width: 900px;
   margin: 0 auto;
+  padding: 20px;
 }
 
 .waiting-room-card {
+  background: white;
+  border-radius: 16px;
   padding: 32px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
 }
 
-.room-code-section {
+.room-title {
   text-align: center;
-  margin: 24px 0;
+  font-size: 32px;
+  margin: 0 0 24px 0;
+  color: #333;
+}
+
+/* 방 코드 표시 */
+.room-code-display {
+  text-align: center;
   padding: 24px;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   border-radius: 12px;
+  margin-bottom: 32px;
   color: white;
 }
 
 .room-code-label {
   font-size: 14px;
-  margin: 0 0 8px 0;
   opacity: 0.9;
+  margin-bottom: 8px;
 }
 
-.room-code {
-  font-size: 48px;
+.room-code-number {
+  font-size: 56px;
   font-weight: 700;
-  letter-spacing: 8px;
-  margin: 8px 0;
+  letter-spacing: 12px;
   font-family: 'Courier New', monospace;
+  margin: 8px 0;
 }
 
 .room-code-hint {
-  font-size: 14px;
-  margin: 8px 0 0 0;
-  opacity: 0.9;
+  font-size: 13px;
+  opacity: 0.85;
+  margin-top: 8px;
 }
 
-.players-section {
-  margin: 24px 0;
+/* 슬롯 컨테이너 */
+.slots-container {
+  margin-bottom: 24px;
 }
 
-.players-section h3 {
-  font-size: 18px;
-  margin: 0 0 16px 0;
+.slots-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.slots-header h3 {
+  font-size: 20px;
+  margin: 0;
   color: #333;
 }
 
-.players-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+.player-count {
+  font-size: 18px;
+  font-weight: 600;
+  color: #667eea;
+  background: #f0f4ff;
+  padding: 6px 16px;
+  border-radius: 20px;
 }
 
-.player-item {
+/* 슬롯 그리드 */
+.slots-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 16px;
+}
+
+.slot-wrapper {
+  position: relative;
+}
+
+.slot-card {
+  position: relative;
+  background: #f8f9fa;
+  border: 2px solid #e0e0e0;
+  border-radius: 12px;
+  padding: 20px;
+  text-align: center;
+  transition: all 0.3s;
+  min-height: 140px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.slot-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.slot-number {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  width: 24px;
+  height: 24px;
+  background: #667eea;
+  color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.slot-icon {
+  font-size: 40px;
+  margin-bottom: 4px;
+}
+
+.slot-text {
+  font-size: 14px;
+  font-weight: 500;
+  color: #666;
+}
+
+/* 슬롯 상태별 스타일 */
+.slot-empty {
+  border-color: #e0e0e0;
+  background: #fafafa;
+}
+
+.slot-empty .slot-text {
+  color: #999;
+}
+
+.slot-occupied {
+  border-color: #667eea;
+  background: linear-gradient(135deg, #f0f4ff 0%, #e8f0ff 100%);
+}
+
+.slot-occupied .slot-text {
+  color: #333;
+  font-weight: 600;
+}
+
+.slot-ai {
+  border-color: #4caf50;
+  background: linear-gradient(135deg, #f1f8f4 0%, #e8f5e9 100%);
+}
+
+.slot-ai .slot-text {
+  color: #2e7d32;
+  font-weight: 600;
+}
+
+.slot-ai-waiting {
+  border-color: #4caf50;
+  background: #f1f8f4;
+  border-style: dashed;
+}
+
+.slot-ai-waiting .slot-text {
+  color: #66bb6a;
+}
+
+.slot-banned {
+  border-color: #f44336;
+  background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%);
+  opacity: 0.7;
+}
+
+.slot-banned .slot-text {
+  color: #c62828;
+  font-weight: 600;
+}
+
+/* 슬롯 메뉴 버튼 */
+.slot-menu-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.slot-menu-btn:hover {
+  background: #f5f5f5;
+  transform: scale(1.1);
+}
+
+/* 드롭다운 메뉴 */
+.slot-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 8px;
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 10;
+  overflow: hidden;
+}
+
+.dropdown-option {
+  width: 100%;
+  padding: 12px 16px;
+  border: none;
+  background: white;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.2s;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.dropdown-option:last-child {
+  border-bottom: none;
+}
+
+.dropdown-option:hover {
+  background: #f8f9fa;
+}
+
+.option-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 4px;
+}
+
+.option-description {
+  font-size: 12px;
+  color: #666;
+}
+
+/* 방 정보 */
+.room-info {
+  margin: 24px 0;
+  padding: 16px;
+  border-radius: 8px;
+}
+
+.host-info {
+  background: linear-gradient(135deg, #fff9e6 0%, #fff3cd 100%);
+  border: 1px solid #ffd700;
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 16px;
-  background: #f8f9fa;
   border-radius: 8px;
-  border-left: 4px solid #667eea;
 }
 
-.player-number {
+.guest-info {
+  background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
+  border: 1px solid #2196f3;
   display: flex;
   align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  background: #667eea;
-  color: white;
-  border-radius: 50%;
-  font-weight: 600;
-  font-size: 14px;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 8px;
 }
 
-.player-nickname {
-  flex: 1;
-  font-size: 16px;
-  font-weight: 500;
+.info-icon {
+  font-size: 24px;
+}
+
+.host-info span:last-child,
+.guest-info span:last-child {
+  font-size: 14px;
   color: #333;
+  font-weight: 500;
 }
 
-.host-badge {
-  font-size: 14px;
-  padding: 4px 12px;
-  background: #ffd700;
-  border-radius: 12px;
-  font-weight: 600;
-}
-
-.waiting-room-actions {
+/* 액션 버튼 */
+.room-actions {
   display: flex;
-  flex-direction: column;
   gap: 12px;
   margin-top: 24px;
 }
 
-.waiting-message {
-  text-align: center;
-  padding: 16px;
-  background: #e3f2fd;
-  border-radius: 8px;
-  color: #1976d2;
-  font-weight: 500;
-  margin: 0;
-}
-
 .btn {
-  padding: 14px 24px;
+  flex: 1;
+  padding: 16px 24px;
   font-size: 16px;
   font-weight: 600;
   border-radius: 8px;
@@ -129,16 +322,55 @@
   transform: none;
 }
 
-.btn-primary {
+.btn-start {
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: white;
 }
 
-.btn-secondary {
+.btn-leave {
   background: #f0f0f0;
   color: #333;
+  flex: 0 0 120px;
 }
 
-.btn-secondary:hover:not(:disabled) {
+.btn-leave:hover:not(:disabled) {
   background: #e0e0e0;
+}
+
+/* 반응형 */
+@media (max-width: 768px) {
+  .waiting-room-container {
+    padding: 12px;
+  }
+
+  .waiting-room-card {
+    padding: 20px;
+  }
+
+  .room-code-number {
+    font-size: 40px;
+    letter-spacing: 8px;
+  }
+
+  .slots-grid {
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 12px;
+  }
+
+  .slot-card {
+    min-height: 120px;
+    padding: 16px;
+  }
+
+  .slot-icon {
+    font-size: 32px;
+  }
+
+  .room-actions {
+    flex-direction: column;
+  }
+
+  .btn-leave {
+    flex: 1;
+  }
 }

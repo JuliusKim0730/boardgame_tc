@@ -1,258 +1,229 @@
-# ✅ v4.1 배포 체크리스트
+# ✅ 배포 체크리스트
 
-## 📋 배포 전 최종 확인
+## 📋 배포 전 준비
 
-### Phase 1: 데이터베이스 ✅
-- [x] 마이그레이션 실행 완료
-- [ ] 카드 시드 실행 완료
-- [ ] 검증 쿼리 실행 완료
-- [ ] 모든 검증 통과
+### Supabase 설정
+- [ ] Supabase 프로젝트 생성 완료
+- [ ] `migration_v4.1.sql` 실행 완료
+- [ ] `seedCards_FULL.sql` 실행 완료
+- [ ] DATABASE_URL 복사 완료
+- [ ] SUPABASE_URL 복사 완료
+- [ ] SUPABASE_ANON_KEY 복사 완료
 
-**검증 명령**:
-```sql
--- VERIFY_MIGRATION.sql 실행
+### GitHub 준비
+- [ ] 코드 최신 상태로 커밋
+- [ ] main 브랜치에 푸시 완료
+- [ ] .gitignore 확인 (.env 파일 제외됨)
+
+---
+
+## 🎯 Render.com 배포
+
+### 1. 서비스 생성
+- [ ] https://dashboard.render.com/ 접속
+- [ ] "New +" → "Web Service" 클릭
+- [ ] GitHub 연동 완료
+- [ ] Repository 선택
+
+### 2. 서비스 설정
+```
+Name: boardgame-backend
+Region: Singapore
+Branch: main
+Root Directory: backend
+Runtime: Node
+Build Command: npm install && npm run build
+Start Command: npm start
+```
+- [ ] 위 설정 입력 완료
+
+### 3. 환경 변수 설정
+```
+NODE_ENV=production
+PORT=10000
+DATABASE_URL=[Supabase DATABASE_URL]
+FRONTEND_URL=https://[your-project].vercel.app
+CLIENT_URL=https://[your-project].vercel.app
+```
+- [ ] 모든 환경 변수 입력 완료
+- [ ] DATABASE_URL 정확히 입력 (비밀번호 포함)
+
+### 4. 배포 실행
+- [ ] "Create Web Service" 클릭
+- [ ] 빌드 진행 확인 (5-10분 소요)
+- [ ] 빌드 성공 확인
+- [ ] Health Check 응답 확인
+  ```bash
+  curl https://boardgame-tc.onrender.com/api/health
+  ```
+
+### 5. URL 확인
+- [ ] Render.com URL 복사
+  - 예: `https://boardgame-tc.onrender.com`
+
+---
+
+## 🎯 Vercel 배포
+
+### 1. 프로젝트 생성
+- [ ] https://vercel.com/dashboard 접속
+- [ ] "Add New..." → "Project" 클릭
+- [ ] GitHub 연동 완료
+- [ ] Repository 선택
+
+### 2. 프로젝트 설정
+```
+Framework Preset: Vite
+Root Directory: frontend
+Build Command: npm run build
+Output Directory: dist
+Install Command: npm install
+```
+- [ ] 위 설정 확인 (자동 감지됨)
+
+### 3. 환경 변수 설정
+```
+VITE_API_URL=https://boardgame-tc.onrender.com
+VITE_SOCKET_URL=https://boardgame-tc.onrender.com
+```
+- [ ] Settings → Environment Variables 이동
+- [ ] 모든 환경 변수 입력 완료
+- [ ] Production, Preview, Development 모두 체크
+
+### 4. 배포 실행
+- [ ] "Deploy" 클릭
+- [ ] 빌드 진행 확인 (2-3분 소요)
+- [ ] 빌드 성공 확인
+- [ ] 프론트엔드 접속 확인
+
+### 5. URL 확인
+- [ ] Vercel URL 복사
+  - 예: `https://your-project.vercel.app`
+
+---
+
+## 🔄 환경 변수 업데이트
+
+### Render.com 재설정
+- [ ] Render.com Dashboard 이동
+- [ ] boardgame-backend 서비스 선택
+- [ ] Environment 탭 이동
+- [ ] `FRONTEND_URL` 업데이트
+  ```
+  FRONTEND_URL=https://[실제-vercel-url].vercel.app
+  ```
+- [ ] `CLIENT_URL` 업데이트
+  ```
+  CLIENT_URL=https://[실제-vercel-url].vercel.app
+  ```
+- [ ] "Save Changes" 클릭
+- [ ] 자동 재배포 대기 (2-3분)
+
+---
+
+## 🧪 통합 테스트
+
+### 기본 기능 테스트
+- [ ] 프론트엔드 접속 성공
+- [ ] 방 생성 성공
+- [ ] 방 코드 표시 확인
+- [ ] 방 참여 성공 (다른 브라우저/시크릿 모드)
+
+### AI 봇 테스트
+- [ ] 슬롯에 AI 추가 성공
+- [ ] AI 닉네임 생성 확인
+- [ ] 게임 시작 성공
+
+### 게임 플레이 테스트
+- [ ] 턴 시작 알림 확인
+- [ ] 이동 및 행동 성공
+- [ ] AI 자동 플레이 확인 (5초 후)
+- [ ] WebSocket 실시간 동기화 확인
+- [ ] 게임 종료 및 결과 화면 확인
+
+### 성능 테스트
+- [ ] 페이지 로딩 속도 확인 (< 3초)
+- [ ] API 응답 속도 확인 (< 1초)
+- [ ] WebSocket 지연 확인 (< 500ms)
+
+---
+
+## 🔍 문제 해결
+
+### CORS 에러 발생 시
+- [ ] Render.com 환경 변수 확인
+- [ ] FRONTEND_URL이 정확한지 확인
+- [ ] 백엔드 재배포
+
+### WebSocket 연결 실패 시
+- [ ] Vercel 환경 변수 확인
+- [ ] VITE_SOCKET_URL이 정확한지 확인
+- [ ] 프론트엔드 재배포
+
+### 데이터베이스 연결 실패 시
+- [ ] Supabase 프로젝트 활성 상태 확인
+- [ ] DATABASE_URL 정확성 확인
+- [ ] 비밀번호 특수문자 URL 인코딩 확인
+
+### AI Scheduler 작동 안 함
+- [ ] Render.com 로그 확인
+- [ ] 서버 슬립 모드 확인
+- [ ] UptimeRobot 설정 (Keep-Alive)
+
+---
+
+## 📊 모니터링 설정
+
+### UptimeRobot (선택사항)
+- [ ] https://uptimerobot.com/ 가입
+- [ ] New Monitor 생성
+- [ ] URL: `https://boardgame-tc.onrender.com/api/health`
+- [ ] Interval: 5분
+- [ ] 알림 설정 (이메일)
+
+### Render.com 로그
+- [ ] Dashboard → boardgame-backend → Logs
+- [ ] 실시간 로그 확인
+- [ ] 에러 로그 모니터링
+
+### Vercel 로그
+- [ ] Dashboard → Deployments → [최신 배포]
+- [ ] Build Logs 확인
+- [ ] Runtime Logs 확인
+
+---
+
+## 🎉 배포 완료!
+
+### 최종 확인
+- [ ] 프론트엔드 URL 작동: https://[your-project].vercel.app
+- [ ] 백엔드 URL 작동: https://boardgame-tc.onrender.com
+- [ ] Health Check 응답: https://boardgame-tc.onrender.com/api/health
+- [ ] 전체 게임 플로우 테스트 완료
+
+### 문서 업데이트
+- [ ] README.md에 배포 URL 추가
+- [ ] 팀원들에게 URL 공유
+- [ ] 사용자 가이드 작성 (선택사항)
+
+---
+
+## 📝 배포 정보 기록
+
+```
+배포 일자: _______________
+프론트엔드 URL: _______________
+백엔드 URL: _______________
+Supabase 프로젝트: _______________
+배포자: _______________
 ```
 
 ---
 
-### Phase 2: 백엔드 서버 ⏳
-- [ ] 서버 시작 성공
-- [ ] 데이터베이스 연결 확인
-- [ ] API 엔드포인트 응답 확인
-- [ ] 에러 로그 없음
+**모든 체크리스트 완료 시 배포 성공!** 🚀✨
 
-**시작 명령**:
-```bash
-cd backend
-npm run dev
-```
-
-**확인 URL**:
-- Health Check: `http://localhost:3000/api/health` (있다면)
-- API Base: `http://localhost:3000/api`
-
----
-
-### Phase 3: 프론트엔드 서버 ⏳
-- [ ] 서버 시작 성공
-- [ ] 컴파일 에러 없음
-- [ ] 브라우저 접속 가능
-- [ ] 콘솔 에러 없음
-
-**시작 명령**:
-```bash
-cd frontend
-npm run dev
-```
-
-**확인 URL**:
-- Frontend: `http://localhost:5173`
-
----
-
-### Phase 4: 기능 검증 ⏳
-
-#### 4.1 기본 기능
-- [ ] 방 생성 가능
-- [ ] 방 참여 가능
-- [ ] 게임 시작 가능
-- [ ] 초기 자금 3,000TC 확인
-
-#### 4.2 v4.1 신규 기능
-- [ ] 결심 토큰 0~2개 표시
-- [ ] 여행 지원 카드 명칭 확인
-- [ ] 집안일 수익 1,500~2,000TC
-- [ ] 2인 플레이 감지
-
-#### 4.3 2인 전용 규칙 (2인 게임)
-- [ ] 찬스 칸 선택 모달 표시
-- [ ] 500TC 선택 옵션 작동
-- [ ] 집안일 첫 방문 보너스
-- [ ] CH11/12/13 덱에서 제거
-
-#### 4.4 최종 정산
-- [ ] 비주류 특성 변환 모달 표시
-- [ ] 변환 계산 정확
-- [ ] 동률 규정 적용
-- [ ] 결과 화면 정상 표시
-
----
-
-## 🧪 필수 테스트 시나리오
-
-### Scenario 1: 2인 게임 전체 플로우
-```
-1. 방 생성 (플레이어 A)
-2. 방 참여 (플레이어 B)
-3. 게임 시작
-4. 초기 자금 3,000TC 확인
-5. 찬스 칸 이동 → 선택 모달 확인
-6. 집안일 칸 첫 방문 → 보너스 확인
-7. 14일차 완료
-8. 비주류 특성 변환 → 모달 확인
-9. 최종 결과 확인
-```
-
-**예상 소요 시간**: 10분
-
-**체크포인트**:
-- [ ] 모든 단계 정상 작동
-- [ ] 에러 없음
-- [ ] UI 정상 표시
-
----
-
-### Scenario 2: 4인 게임 회귀 테스트
-```
-1. 방 생성 + 4명 참여
-2. 게임 시작
-3. 기존 기능 정상 작동 확인
-4. CH11/12/13 카드 정상 작동
-5. 공동 목표 패널티 적용 확인
-```
-
-**예상 소요 시간**: 15분
-
-**체크포인트**:
-- [ ] 기존 기능 정상
-- [ ] 새 기능과 충돌 없음
-
----
-
-## 🚨 긴급 롤백 절차
-
-### 문제 발생 시
-
-#### 1. 서버 중지
-```bash
-# 백엔드/프론트엔드 서버 중지
-Ctrl + C
-```
-
-#### 2. 데이터베이스 롤백
-```sql
--- migration_v4.1.sql의 롤백 섹션 실행
--- 또는 백업에서 복원
-```
-
-#### 3. 코드 롤백
-```bash
-git revert <commit-hash>
-# 또는
-git reset --hard <previous-commit>
-```
-
-#### 4. 재시작
-```bash
-cd backend && npm run dev
-cd frontend && npm run dev
-```
-
----
-
-## 📊 배포 상태
-
-### 현재 상태: 🟡 배포 준비 중
-
-| 단계 | 상태 | 완료 시간 |
-|------|------|----------|
-| 데이터베이스 마이그레이션 | ✅ 완료 | _________ |
-| 카드 데이터 시드 | ⏳ 대기 | _________ |
-| 백엔드 서버 시작 | ⏳ 대기 | _________ |
-| 프론트엔드 서버 시작 | ⏳ 대기 | _________ |
-| 기능 검증 | ⏳ 대기 | _________ |
-| 테스트 시나리오 | ⏳ 대기 | _________ |
-
----
-
-## 🎯 배포 완료 조건
-
-### 필수 조건 (Must Have)
-- [x] 데이터베이스 마이그레이션 성공
-- [ ] 카드 데이터 시드 성공
-- [ ] 서버 정상 시작
-- [ ] 초기 자금 3,000TC 확인
-- [ ] 2인 게임 전체 플로우 테스트 통과
-
-### 권장 조건 (Should Have)
-- [ ] 4인 게임 회귀 테스트 통과
-- [ ] 모든 신규 기능 검증
-- [ ] 성능 이슈 없음
-- [ ] 에러 로그 없음
-
-### 선택 조건 (Nice to Have)
-- [ ] 전체 테스트 시나리오 12개 통과
-- [ ] 부하 테스트 통과
-- [ ] 사용자 피드백 수집
-
----
-
-## 📝 배포 로그
-
-### 배포 정보
-- **배포 일시**: 2024년 12월 1일
-- **배포자**: _____________
-- **버전**: v4.1
-- **환경**: Development / Staging / Production
-
-### 실행 로그
-```
-[시간] 데이터베이스 마이그레이션 시작
-[시간] 마이그레이션 완료 ✅
-[시간] 카드 시드 시작
-[시간] 카드 시드 완료
-[시간] 백엔드 서버 시작
-[시간] 프론트엔드 서버 시작
-[시간] 기능 검증 시작
-[시간] 테스트 완료
-[시간] 배포 완료 🎉
-```
-
-### 발견된 이슈
-```
-이슈 #1: _____________
-해결: _____________
-
-이슈 #2: _____________
-해결: _____________
-```
-
----
-
-## ✅ 최종 승인
-
-### 배포 승인자
-- [ ] 개발자: _____________
-- [ ] 테스터: _____________
-- [ ] PM: _____________
-
-### 배포 완료 확인
-- [ ] 모든 필수 조건 충족
-- [ ] 테스트 통과
-- [ ] 문서 업데이트
-- [ ] 팀 공지 완료
-
-**배포 완료 시간**: _____________
-
----
-
-## 🎊 배포 완료!
-
-```
- ____             _                                    _   
-|  _ \  ___ _ __ | | ___  _   _ _ __ ___   ___ _ __ | |_ 
-| | | |/ _ \ '_ \| |/ _ \| | | | '_ ` _ \ / _ \ '_ \| __|
-| |_| |  __/ |_) | | (_) | |_| | | | | | |  __/ | | | |_ 
-|____/ \___| .__/|_|\___/ \__, |_| |_| |_|\___|_| |_|\__|
-           |_|            |___/                           
-                                                          
-              v4.1 배포 완료! 🌙✨
-```
-
-**축하합니다! 이제 게임을 즐기세요!** 🎮🎉
-
----
-
-**문서 버전**: 1.0  
-**최종 수정**: 2024년 12월 1일  
-**상태**: 🟡 진행 중 → 🟢 완료 대기
+문제 발생 시:
+1. 로그 확인
+2. 환경 변수 재확인
+3. 재배포 시도
+4. 문서 참조: DEPLOYMENT_GUIDE_FINAL.md
