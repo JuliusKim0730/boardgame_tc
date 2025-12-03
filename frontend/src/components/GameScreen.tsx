@@ -10,6 +10,7 @@ import ResultScreen from './ResultScreen';
 import ActionLog from './ActionLog';
 import CardDrawModal from './CardDrawModal';
 import FinalPurchaseModal from './FinalPurchaseModal';
+import ChanceInteractionModal from './ChanceInteractionModal';
 import './GameScreen.css';
 
 interface Props {
@@ -62,6 +63,8 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
   const [showCardDrawModal, setShowCardDrawModal] = useState(false);
   const [showFinalPurchase, setShowFinalPurchase] = useState(false);
   const [finalPurchaseComplete, setFinalPurchaseComplete] = useState(false);
+  const [chanceInteraction, setChanceInteraction] = useState<any>(null);
+  const [showChanceInteraction, setShowChanceInteraction] = useState(false);
 
   // 게임 상태 로드
   const loadGameState = async (preserveActionState = false) => {
@@ -226,9 +229,17 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
     });
 
     socket.on('chance-request', (data: any) => {
-      if (data.targetPlayerId === playerId) {
-        setMessage(data.message);
-      }
+      console.log('찬스 카드 상호작용 요청:', data);
+      setChanceInteraction(data);
+      setShowChanceInteraction(true);
+      setMessage(data.message);
+    });
+
+    socket.on('chance-resolved', (data: any) => {
+      console.log('찬스 카드 상호작용 완료:', data);
+      setShowChanceInteraction(false);
+      setChanceInteraction(null);
+      loadGameState();
     });
 
     socket.on('house-first-visit-bonus', (data: any) => {
@@ -471,6 +482,25 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
   const getActionName = (type: number): string => {
     const names = ['', '무료 계획', '조사하기', '집안일', '여행 지원', '찬스', '자유 행동'];
     return names[type] || '알 수 없음';
+  };
+
+  const handleChanceResponse = async (response: any) => {
+    if (!chanceInteraction) return;
+
+    try {
+      await api.respondToChanceInteraction(chanceInteraction.interactionId, response);
+      setShowChanceInteraction(false);
+      setChanceInteraction(null);
+      setMessage('상호작용이 완료되었습니다');
+    } catch (error: any) {
+      console.error('찬스 카드 응답 실패:', error);
+      setMessage(error.response?.data?.error || '응답 실패');
+    }
+  };
+
+  const handleChanceCancel = () => {
+    setShowChanceInteraction(false);
+    setChanceInteraction(null);
   };
 
   const isMyTurn = gameState.currentTurnPlayerId === playerId;
@@ -875,6 +905,20 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
           setShowCardDrawModal(false);
           setDrawnCard(null);
         }}
+      />
+
+      <ChanceInteractionModal
+        isOpen={showChanceInteraction}
+        type={chanceInteraction?.type}
+        players={allPlayers}
+        currentPlayerId={playerId}
+        handCards={playerState?.hand_cards || []}
+        targetHandCards={chanceInteraction?.targetPlayerId ? 
+          allPlayers.find(p => p.player_id === chanceInteraction.targetPlayerId)?.hand_cards || [] : 
+          []
+        }
+        onResponse={handleChanceResponse}
+        onCancel={handleChanceCancel}
       />
     </div>
   );

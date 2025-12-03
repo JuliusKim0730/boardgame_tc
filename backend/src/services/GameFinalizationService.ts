@@ -42,6 +42,21 @@ export class GameFinalizationService {
         [totalCost, playerState.id]
       );
 
+      // 구매하지 않은 카드를 버린 카드로 기록
+      const handCardsResult = await client.query(
+        'SELECT card_id FROM hands WHERE player_state_id = $1',
+        [playerState.id]
+      );
+      
+      for (const row of handCardsResult.rows) {
+        if (!cardIds.includes(row.card_id)) {
+          await client.query(
+            'INSERT INTO discarded_cards (game_id, player_state_id, card_id) VALUES ($1, $2, $3)',
+            [gameId, playerState.id, row.card_id]
+          );
+        }
+      }
+
       // 구매 기록
       for (const cardId of cardIds) {
         const cardResult = await client.query(

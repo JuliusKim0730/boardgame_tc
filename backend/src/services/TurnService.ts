@@ -517,8 +517,8 @@ export class TurnService {
         throw new Error('결심 토큰이 부족합니다');
       }
       
-      // 직전 행동 칸 반복 불가 검증
-      if (actionType === playerState.last_position) {
+      // 직전 행동 칸 반복 불가 검증 (강제 이동 시 예외)
+      if (actionType === playerState.last_position && !playerState.forced_move) {
         throw new Error('직전에 행동한 칸은 반복할 수 없습니다');
       }
       

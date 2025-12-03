@@ -71,6 +71,12 @@ export class TurnManager {
         [playerId, gameId]
       );
 
+      // forced_move 플래그 초기화 (턴 시작 시)
+      await client.query(
+        'UPDATE player_states SET forced_move = FALSE WHERE game_id = $1 AND player_id = $2',
+        [gameId, playerId]
+      );
+
       // 턴 잠금
       this.lockTurn(gameId, playerId);
 

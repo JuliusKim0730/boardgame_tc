@@ -103,6 +103,17 @@ router.post('/games/:gameId/chance-response', async (req, res) => {
   }
 });
 
+// 찬스 상호작용 응답 (새 엔드포인트)
+router.post('/chance/respond', async (req, res) => {
+  try {
+    const { interactionId, response } = req.body;
+    await chanceService.respondToInteraction(interactionId, response);
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
 // 공동 계획 기여
 router.post('/games/:gameId/contribute', async (req, res) => {
   try {

@@ -69,6 +69,9 @@ export const api = {
   respondToChance: (gameId: string, interactionId: string, response: any) =>
     axios.post(`${API_BASE}/games/${gameId}/chance-response`, { interactionId, response }),
 
+  respondToChanceInteraction: (interactionId: string, response: any) =>
+    axios.post(`${API_BASE}/chance/respond`, { interactionId, response }),
+
   contribute: (gameId: string, playerId: string, amount: number) =>
     axios.post(`${API_BASE}/games/${gameId}/contribute`, { playerId, amount }),
 

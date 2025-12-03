@@ -241,10 +241,10 @@ export class ChanceService {
       );
       const targetPosition = positionResult.rows[0].position;
 
-      // 모든 플레이어를 해당 위치로 이동
+      // 모든 플레이어를 해당 위치로 이동하고 forced_move 플래그 설정
       await client.query(
-        'UPDATE player_states SET position = $1 WHERE game_id = $2',
-        [targetPosition, gameId]
+        'UPDATE player_states SET position = $1, forced_move = TRUE WHERE game_id = $2 AND player_id != $3',
+        [targetPosition, gameId, playerId]
       );
 
       await client.query('COMMIT');
@@ -442,9 +442,88 @@ export class ChanceService {
         // CH20: 공동 목표 지원 - 공동 목표 기여 +3,000TC
         return await this.handleJointPlanSupport(client, gameId, playerId);
       
+      case 'draw_discarded':
+        // CH16: 버린만큼 뽑기 - 버린 카드 수만큼 계획 카드 드로우
+        return await this.handleDrawDiscarded(client, gameId, playerId);
+      
+      case 'select_joint_plan':
+        // CH17: 여행 팜플렛 - 공동 목표 카드 선택
+        return await this.handleSelectJointPlan(gameId, playerId);
+      
       default:
         return { type: 'special', action };
     }
+  }
+
+  // CH16: 버린만큼 뽑기
+  private async handleDrawDiscarded(client: any, gameId: string, playerId: string) {
+    // 플레이어 상태 ID 조회
+    const stateResult = await client.query(
+      'SELECT id FROM player_states WHERE game_id = $1 AND player_id = $2',
+      [gameId, playerId]
+    );
+    const playerStateId = stateResult.rows[0].id;
+
+    // 버린 카드 수 조회
+    const discardedResult = await client.query(
+      'SELECT COUNT(*) as count FROM discarded_cards WHERE game_id = $1 AND player_state_id = $2',
+      [gameId, playerStateId]
+    );
+    const discardedCount = parseInt(discardedResult.rows[0].count);
+
+    if (discardedCount === 0) {
+      return {
+        type: 'special',
+        action: 'draw_discarded',
+        count: 0,
+        message: '버린 카드가 없습니다'
+      };
+    }
+
+    // 버린 카드 수만큼 계획 카드 드로우
+    const drawnCards = [];
+    for (let i = 0; i < discardedCount; i++) {
+      const result = await this.drawPlan(client, gameId, playerId);
+      if (result.cardId) {
+        drawnCards.push(result.cardId);
+      }
+    }
+
+    return {
+      type: 'special',
+      action: 'draw_discarded',
+      count: drawnCards.length,
+      cards: drawnCards,
+      message: `버린 카드 ${discardedCount}장만큼 계획 카드 ${drawnCards.length}장을 획득했습니다!`
+    };
+  }
+
+  // CH17: 여행 팜플렛 - 공동 목표 카드 선택
+  private async handleSelectJointPlan(gameId: string, playerId: string): Promise<any> {
+    const interactionId = `${gameId}-${Date.now()}`;
+    
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pendingInteractions.delete(interactionId);
+        reject(new Error('응답 시간 초과'));
+      }, 60000); // 60초
+
+      this.pendingInteractions.set(interactionId, {
+        gameId,
+        requesterId: playerId,
+        chanceCode: 'CH17',
+        timeout,
+        resolve,
+        reject
+      });
+
+      this.io?.to(gameId).emit('chance-request', {
+        interactionId,
+        type: 'select_joint_plan',
+        requesterId: playerId,
+        message: '공동 목표 카드를 선택하세요'
+      });
+    });
   }
 
   // CH20: 공동 목표 지원
@@ -675,12 +754,13 @@ export class ChanceService {
     const pos1 = pos1Result.rows[0].position;
     const pos2 = pos2Result.rows[0].position;
 
+    // 위치 교환 및 forced_move 플래그 설정
     await client.query(
-      'UPDATE player_states SET position = $1 WHERE game_id = $2 AND player_id = $3',
+      'UPDATE player_states SET position = $1, forced_move = TRUE WHERE game_id = $2 AND player_id = $3',
       [pos2, gameId, player1Id]
     );
     await client.query(
-      'UPDATE player_states SET position = $1 WHERE game_id = $2 AND player_id = $3',
+      'UPDATE player_states SET position = $1, forced_move = TRUE WHERE game_id = $2 AND player_id = $3',
       [pos1, gameId, player2Id]
     );
   }
