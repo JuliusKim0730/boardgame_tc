@@ -347,7 +347,7 @@ export class AIPlayerService {
       });
 
       // 점수 순으로 정렬
-      scoredCards.sort((a, b) => b.score - a.score);
+      scoredCards.sort((a: { card: any; score: number }, b: { card: any; score: number }) => b.score - a.score);
 
       // 예산 내에서 최대한 구매
       const purchaseCards: string[] = [];
