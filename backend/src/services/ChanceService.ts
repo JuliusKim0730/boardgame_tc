@@ -64,6 +64,9 @@ export class ChanceService {
         case 'special':
           return await this.handleSpecialCard(client, gameId, playerId, metadata.action);
         
+        case 'catchup':
+          return await this.handleCatchupCard(client, gameId, playerId, metadata.action);
+        
         default:
           throw new Error('알 수 없는 카드 타입입니다');
       }
@@ -304,6 +307,126 @@ export class ChanceService {
     }
   }
 
+  // 캐치업 카드 처리
+  private async handleCatchupCard(client: any, gameId: string, playerId: string, action: string) {
+    switch (action) {
+      case 'catchup_money':
+        // CH21: 엄마의 응원 - TC 가장 적은 사람 +2,000TC
+        return await this.catchupMoney(client, gameId);
+      
+      case 'catchup_plan':
+        // CH22: 여행 선생님의 조언 - 일반 계획 가장 적은 사람 +1
+        return await this.drawPlanForLowest(client, gameId);
+      
+      case 'catchup_memory':
+        // CH23, CH24: 추억 가장 낮은 사람 +2
+        return await this.catchupMemory(client, gameId);
+      
+      case 'buddy_action':
+        // CH25: 동행 버디 - 본인 행동1회, 지목1명 행동1회
+        return await this.handleBuddyAction(gameId, playerId);
+      
+      default:
+        return { type: 'catchup', action };
+    }
+  }
+
+  // CH21: TC 가장 적은 사람에게 +2,000TC
+  private async catchupMoney(client: any, gameId: string) {
+    const result = await client.query(
+      `SELECT player_id, money
+       FROM player_states
+       WHERE game_id = $1
+       ORDER BY money ASC
+       LIMIT 1`,
+      [gameId]
+    );
+
+    if (result.rows.length > 0) {
+      const lowestPlayer = result.rows[0];
+      
+      await client.query(
+        'UPDATE player_states SET money = money + 2000 WHERE game_id = $1 AND player_id = $2',
+        [gameId, lowestPlayer.player_id]
+      );
+
+      return { 
+        type: 'catchup', 
+        action: 'money', 
+        targetPlayerId: lowestPlayer.player_id,
+        amount: 2000,
+        message: `TC가 가장 적은 플레이어에게 +2,000TC`
+      };
+    }
+
+    return { type: 'catchup', action: 'money', result: 'no_player' };
+  }
+
+  // CH23, CH24: 추억 가장 낮은 사람에게 +2
+  private async catchupMemory(client: any, gameId: string) {
+    const result = await client.query(
+      `SELECT player_id, traits
+       FROM player_states
+       WHERE game_id = $1
+       ORDER BY (traits->>'memory')::int ASC NULLS FIRST
+       LIMIT 1`,
+      [gameId]
+    );
+
+    if (result.rows.length > 0) {
+      const lowestPlayer = result.rows[0];
+      
+      await client.query(
+        `UPDATE player_states 
+         SET traits = jsonb_set(
+           traits, 
+           '{memory}', 
+           to_jsonb(COALESCE((traits->>'memory')::int, 0) + 2)
+         )
+         WHERE game_id = $1 AND player_id = $2`,
+        [gameId, lowestPlayer.player_id]
+      );
+
+      return { 
+        type: 'catchup', 
+        action: 'memory', 
+        targetPlayerId: lowestPlayer.player_id,
+        amount: 2,
+        message: `추억이 가장 낮은 플레이어에게 추억 +2`
+      };
+    }
+
+    return { type: 'catchup', action: 'memory', result: 'no_player' };
+  }
+
+  // CH25: 동행 버디 - 본인 행동1회, 지목1명 행동1회
+  private async handleBuddyAction(gameId: string, requesterId: string): Promise<any> {
+    const interactionId = `${gameId}-${Date.now()}`;
+    
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pendingInteractions.delete(interactionId);
+        reject(new Error('응답 시간 초과'));
+      }, 30000);
+
+      this.pendingInteractions.set(interactionId, {
+        gameId,
+        requesterId,
+        chanceCode: 'CH25',
+        timeout,
+        resolve,
+        reject
+      });
+
+      this.io?.to(gameId).emit('chance-request', {
+        interactionId,
+        type: 'buddy_action',
+        requesterId,
+        message: '동행 버디: 함께 행동할 플레이어를 선택하세요'
+      });
+    });
+  }
+
   // 특수 행동 카드 처리
   private async handleSpecialCard(client: any, gameId: string, playerId: string, action: string) {
     switch (action) {
@@ -315,9 +438,29 @@ export class ChanceService {
         // CH18: 체력이 넘친다 - 이동 없이 행동 1회
         return { type: 'special', action: 'extra_action', message: '이동 없이 행동 1회를 수행할 수 있습니다' };
       
+      case 'joint_plan_support':
+        // CH20: 공동 목표 지원 - 공동 목표 기여 +3,000TC
+        return await this.handleJointPlanSupport(client, gameId, playerId);
+      
       default:
         return { type: 'special', action };
     }
+  }
+
+  // CH20: 공동 목표 지원
+  private async handleJointPlanSupport(client: any, gameId: string, playerId: string) {
+    // 공동 목표 기여 테이블에 3,000TC 추가
+    await client.query(
+      'INSERT INTO joint_plan_contributions (game_id, player_state_id, amount) VALUES ($1, (SELECT id FROM player_states WHERE game_id = $1 AND player_id = $2), 3000)',
+      [gameId, playerId]
+    );
+
+    return {
+      type: 'special',
+      action: 'joint_plan_support',
+      amount: 3000,
+      message: '공동 목표에 3,000TC를 기여했습니다!'
+    };
   }
 
   // CH19: 반전의 기회 - 현재 칸 행동 반복
@@ -358,6 +501,10 @@ export class ChanceService {
           await this.executeSharedHouse(client, interaction.gameId, interaction.requesterId, response.targetId);
           break;
         
+        case 'CH9': // 공동 지원 이벤트
+          await this.executeSharedInvest(client, interaction.gameId, interaction.requesterId, response.targetId);
+          break;
+        
         case 'CH10': // 계획 구매 요청
           if (response.accepted) {
             await this.executePurchase(client, interaction.gameId, interaction.requesterId, response.targetId, response.cardId);
@@ -372,6 +519,10 @@ export class ChanceService {
         
         case 'CH13': // 자릿수 바꾸기
           await this.executeSwapPosition(client, interaction.gameId, interaction.requesterId, response.targetId);
+          break;
+        
+        case 'CH25': // 동행 버디
+          await this.executeBuddyAction(client, interaction.gameId, interaction.requesterId, response.targetId);
           break;
       }
 
@@ -415,6 +566,44 @@ export class ChanceService {
       'UPDATE player_states SET money = money + $1 WHERE game_id = $2 AND player_id = ANY($3)',
       [money, gameId, [requesterId, targetId]]
     );
+  }
+
+  // CH9: 공동 투자 실행
+  private async executeSharedInvest(client: any, gameId: string, requesterId: string, targetId: string) {
+    // 여행 지원 카드 드로우
+    const deckResult = await client.query(
+      'SELECT card_order FROM decks WHERE game_id = $1 AND type = $2',
+      [gameId, 'support']
+    );
+    
+    const cardOrder = JSON.parse(deckResult.rows[0].card_order);
+    const cardId = cardOrder.shift();
+    
+    await client.query(
+      'UPDATE decks SET card_order = $1 WHERE game_id = $2 AND type = $3',
+      [JSON.stringify(cardOrder), gameId, 'support']
+    );
+
+    const cardResult = await client.query('SELECT * FROM cards WHERE id = $1', [cardId]);
+    const money = cardResult.rows[0].effects.money || 0;
+
+    // 두 플레이어 모두에게 동일 효과 적용
+    await client.query(
+      'UPDATE player_states SET money = money + $1 WHERE game_id = $2 AND player_id = ANY($3)',
+      [money, gameId, [requesterId, targetId]]
+    );
+  }
+
+  // CH25: 동행 버디 실행
+  private async executeBuddyAction(client: any, gameId: string, requesterId: string, targetId: string) {
+    // 두 플레이어 모두 추가 행동 1회 가능 상태로 설정
+    // 실제 행동은 프론트엔드에서 처리
+    return {
+      type: 'buddy_action',
+      requesterId,
+      targetId,
+      message: '두 플레이어 모두 추가 행동 1회를 수행할 수 있습니다'
+    };
   }
 
   // 실제 구매 실행
@@ -502,7 +691,19 @@ export class ChanceService {
       [gameId, 'plan']
     );
     
-    const cardOrder = JSON.parse(deckResult.rows[0].card_order);
+    let cardOrder = JSON.parse(deckResult.rows[0].card_order);
+    
+    // 덱이 비었으면 재충전 시도
+    if (cardOrder.length === 0) {
+      console.log('⚠️ Plan 덱이 비었습니다. 재충전 시도...');
+      cardOrder = await this.refillDeck(client, gameId, 'plan');
+      
+      if (cardOrder.length === 0) {
+        console.log('❌ Plan 덱 완전 소진');
+        return { type: 'draw', result: 'deck_empty', message: '더 이상 뽑을 카드가 없습니다' };
+      }
+    }
+    
     const cardId = cardOrder.shift();
     
     await client.query(
@@ -526,6 +727,53 @@ export class ChanceService {
     );
 
     return { type: 'draw', cardId };
+  }
+
+  // 덱 재충전 (버린 카드 더미 섞기)
+  private async refillDeck(client: any, gameId: string, deckType: string): Promise<any[]> {
+    // 버린 카드 더미 조회 (구매되지 않은 카드들)
+    const discardedResult = await client.query(
+      `SELECT c.id FROM cards c
+       WHERE c.type = $1
+       AND NOT EXISTS (
+         SELECT 1 FROM hands h
+         JOIN player_states ps ON h.player_state_id = ps.id
+         WHERE ps.game_id = $2 AND h.card_id = c.id
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM purchased p
+         JOIN player_states ps ON p.player_state_id = ps.id
+         WHERE ps.game_id = $2 AND p.card_id = c.id
+       )`,
+      [deckType, gameId]
+    );
+
+    if (discardedResult.rows.length === 0) {
+      return [];
+    }
+
+    // 카드 ID 배열 생성 및 섞기
+    const cardIds = discardedResult.rows.map((row: any) => row.id);
+    const shuffled = this.shuffleArray(cardIds);
+
+    // 덱 업데이트
+    await client.query(
+      'UPDATE decks SET card_order = $1 WHERE game_id = $2 AND type = $3',
+      [JSON.stringify(shuffled), gameId, deckType]
+    );
+
+    console.log(`✅ ${deckType} 덱 재충전 완료: ${shuffled.length}장`);
+    return shuffled;
+  }
+
+  // 배열 섞기 (Fisher-Yates)
+  private shuffleArray(array: any[]): any[] {
+    const shuffled = [...array];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled;
   }
 
   private async drawPlanForLowest(client: any, gameId: string) {

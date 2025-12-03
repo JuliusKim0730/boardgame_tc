@@ -353,9 +353,15 @@ export class TurnService {
     console.log('파싱된 덱 카드 수:', cardOrder.length);
     console.log('덱 카드 ID 목록:', cardOrder);
     
+    // 덱이 비었으면 재충전 시도
     if (cardOrder.length === 0) {
-      console.error(`${deckType} 덱에 카드가 없습니다`);
-      throw new Error(`${deckType} 덱에 카드가 없습니다`);
+      console.log(`⚠️ ${deckType} 덱이 비었습니다. 재충전 시도...`);
+      cardOrder = await this.refillDeck(client, gameId, deckType);
+      
+      if (cardOrder.length === 0) {
+        console.error(`❌ ${deckType} 덱 완전 소진`);
+        throw new Error(`${deckType} 덱에 더 이상 카드가 없습니다`);
+      }
     }
     
     const cardId = cardOrder.shift();
@@ -426,6 +432,53 @@ export class TurnService {
     }
     
     return { card };
+  }
+
+  // 덱 재충전 (버린 카드 더미 섞기)
+  private async refillDeck(client: any, gameId: string, deckType: string): Promise<any[]> {
+    // 버린 카드 더미 조회 (구매되지 않은 카드들)
+    const discardedResult = await client.query(
+      `SELECT c.id FROM cards c
+       WHERE c.type = $1
+       AND NOT EXISTS (
+         SELECT 1 FROM hands h
+         JOIN player_states ps ON h.player_state_id = ps.id
+         WHERE ps.game_id = $2 AND h.card_id = c.id
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM purchased p
+         JOIN player_states ps ON p.player_state_id = ps.id
+         WHERE ps.game_id = $2 AND p.card_id = c.id
+       )`,
+      [deckType, gameId]
+    );
+
+    if (discardedResult.rows.length === 0) {
+      return [];
+    }
+
+    // 카드 ID 배열 생성 및 섞기
+    const cardIds = discardedResult.rows.map((row: any) => row.id);
+    const shuffled = this.shuffleArray(cardIds);
+
+    // 덱 업데이트
+    await client.query(
+      'UPDATE decks SET card_order = $1 WHERE game_id = $2 AND type = $3',
+      [JSON.stringify(shuffled), gameId, deckType]
+    );
+
+    console.log(`✅ ${deckType} 덱 재충전 완료: ${shuffled.length}장`);
+    return shuffled;
+  }
+
+  // 배열 섞기 (Fisher-Yates)
+  private shuffleArray(array: any[]): any[] {
+    const shuffled = [...array];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled;
   }
 
   private async applyMoneyEffect(client: any, playerStateId: string, amount: number) {
