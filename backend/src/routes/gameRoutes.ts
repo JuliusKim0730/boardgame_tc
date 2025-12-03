@@ -300,9 +300,9 @@ router.get('/games/:gameId/state', async (req, res) => {
             };
           }
           
-          // 손패 조회
+          // 손패 조회 (h.id를 hand_id로 포함)
           const handCardsResult = await client.query(
-            `SELECT c.id, c.code, c.name, c.type, c.cost, c.effects, c.metadata
+            `SELECT h.id as hand_id, h.seq, c.id, c.code, c.name, c.type, c.cost, c.effects, c.metadata
              FROM hands h
              JOIN cards c ON h.card_id = c.id
              WHERE h.player_state_id = $1

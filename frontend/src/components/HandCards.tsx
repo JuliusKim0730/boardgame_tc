@@ -2,7 +2,8 @@ import { useState } from 'react';
 import './HandCards.css';
 
 interface Card {
-  id: string;
+  hand_id?: string; // 손패 레코드의 고유 ID
+  id: string; // 카드 ID
   code?: string;
   name: string;
   type?: string;
@@ -71,16 +72,16 @@ function HandCards({ cards }: Props) {
           {cards.length === 0 ? (
             <p className="empty-message">카드가 없습니다</p>
           ) : (
-            cards.map((card) => (
+            cards.map((card, index) => (
               <div 
-                key={card.id} 
+                key={card.hand_id || `${card.id}-${index}`} 
                 className="card-item"
                 onClick={() => setSelectedCard(card)}
               >
                 <div className="card-name">{card.name}</div>
                 <div className="card-cost">{card.cost?.toLocaleString() || 0}TC</div>
                 <div className="card-effects-preview">
-                  {renderEffects(card.effects, card.id)}
+                  {renderEffects(card.effects, card.hand_id || card.id)}
                 </div>
               </div>
             ))
