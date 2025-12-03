@@ -52,7 +52,20 @@ export class AIPlayerService {
       }
     }
 
-    // 4. 턴 종료 (별도 트랜잭션으로 TurnManager 사용)
+    // 4. 결심 토큰 사용 결정
+    try {
+      const shouldUseToken = await this.shouldUseResolveTokenNow(gameId, playerId);
+      
+      if (shouldUseToken) {
+        console.log(`🔥 AI 결심 토큰 사용 결정`);
+        await this.useResolveToken(gameId, playerId);
+      }
+    } catch (error: any) {
+      console.error('❌ AI 결심 토큰 사용 중 에러:', error);
+      // 에러가 나도 턴 종료는 진행
+    }
+
+    // 5. 턴 종료 (별도 트랜잭션으로 TurnManager 사용)
     try {
       console.log(`🤖 AI 턴 종료 중...`);
       const { turnManager } = await import('./TurnManager');
@@ -180,44 +193,138 @@ export class AIPlayerService {
     return targetPosition;
   }
 
+
+
   /**
-   * 행동 결정
+   * 결심 토큰 사용 전략 (턴 종료 전 결정)
+   * - 2-5일 중 랜덤하게 1번 사용
+   * - 10-12일 중 랜덤하게 1번 사용
    */
-  private async decideAction(gameState: any, position: number): Promise<number> {
-    const { day, playerState, tokenUsedCount } = gameState;
+  private async shouldUseResolveTokenNow(gameId: string, playerId: string): Promise<boolean> {
+    const client = await pool.connect();
+    try {
+      // 게임 상태 조회
+      const gameResult = await client.query(
+        'SELECT day FROM games WHERE id = $1',
+        [gameId]
+      );
+      const day = gameResult.rows[0].day;
 
-    // 6번 칸 (자유 행동)인 경우
-    if (position === 6) {
-      // 결심 토큰 사용 전략
-      const shouldUseToken = this.shouldUseResolveToken(day, tokenUsedCount);
-      
-      if (shouldUseToken && playerState.resolve_token > 0) {
-        // 가장 유용한 행동 선택 (2번 조사하기 또는 3번 집안일)
-        return playerState.money < 5000 ? 3 : 2;
+      // 플레이어 상태 조회
+      const playerResult = await client.query(
+        'SELECT resolve_token FROM player_states WHERE game_id = $1 AND player_id = $2',
+        [gameId, playerId]
+      );
+      const resolveToken = playerResult.rows[0].resolve_token;
+
+      // 토큰이 없으면 사용 불가
+      if (resolveToken <= 0) {
+        return false;
       }
-    }
 
-    // 해당 칸의 기본 행동
-    return position;
+      // 결심 토큰 사용 이력 조회
+      const tokenUsedResult = await client.query(
+        `SELECT data->>'day' as used_day FROM event_logs 
+         WHERE game_id = $1 
+         AND event_type = 'resolve_token_used' 
+         AND data->>'playerId' = $2
+         ORDER BY created_at`,
+        [gameId, playerId]
+      );
+
+      const usedDays = tokenUsedResult.rows.map(row => parseInt(row.used_day));
+
+      // 2-5일 중 사용 여부 확인
+      const usedInEarlyPhase = usedDays.some(d => d >= 2 && d <= 5);
+      
+      // 10-12일 중 사용 여부 확인
+      const usedInLatePhase = usedDays.some(d => d >= 10 && d <= 12);
+
+      // 2-5일 구간: 아직 사용하지 않았고 현재 2-5일이면 확률적으로 사용
+      if (!usedInEarlyPhase && day >= 2 && day <= 5) {
+        // Day 2: 25%, Day 3: 33%, Day 4: 50%, Day 5: 100%
+        const probability = day === 5 ? 1.0 : 1.0 / (6 - day);
+        return Math.random() < probability;
+      }
+
+      // 10-12일 구간: 아직 사용하지 않았고 현재 10-12일이면 확률적으로 사용
+      if (!usedInLatePhase && day >= 10 && day <= 12) {
+        // Day 10: 33%, Day 11: 50%, Day 12: 100%
+        const probability = day === 12 ? 1.0 : 1.0 / (13 - day);
+        return Math.random() < probability;
+      }
+
+      return false;
+    } finally {
+      client.release();
+    }
   }
 
   /**
-   * 결심 토큰 사용 전략
-   * 1-7턴: 1개 사용
-   * 8-14턴: 1개 사용
+   * 결심 토큰 사용 실행
    */
-  private shouldUseResolveToken(day: number, tokenUsedCount: number): boolean {
-    if (day <= 7 && tokenUsedCount === 0) {
-      // 1-7턴 중 랜덤하게 사용 (확률 증가)
-      return Math.random() < (day / 7) * 0.5;
-    }
-    
-    if (day > 7 && tokenUsedCount === 1) {
-      // 8-14턴 중 랜덤하게 사용
-      return Math.random() < ((day - 7) / 7) * 0.5;
-    }
+  private async useResolveToken(gameId: string, playerId: string): Promise<void> {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
 
-    return false;
+      // 플레이어 상태 조회
+      const stateResult = await client.query(
+        'SELECT id, resolve_token, position, last_position FROM player_states WHERE game_id = $1 AND player_id = $2',
+        [gameId, playerId]
+      );
+      const playerState = stateResult.rows[0];
+
+      if (playerState.resolve_token <= 0) {
+        throw new Error('결심 토큰이 부족합니다');
+      }
+
+      // 토큰 차감
+      await client.query(
+        'UPDATE player_states SET resolve_token = resolve_token - 1 WHERE id = $1',
+        [playerState.id]
+      );
+
+      // 사용 로그 기록
+      const gameResult = await client.query('SELECT day FROM games WHERE id = $1', [gameId]);
+      const currentDay = gameResult.rows[0].day;
+
+      await client.query(
+        'INSERT INTO event_logs (game_id, event_type, data) VALUES ($1, $2, $3)',
+        [gameId, 'resolve_token_used', JSON.stringify({ playerId, day: currentDay })]
+      );
+
+      // 추가 행동 선택 (직전 행동 제외)
+      const availableActions = [1, 2, 3, 4, 5, 6].filter(a => a !== playerState.last_position);
+      
+      // 우선순위: 2번(조사하기) > 3번(집안일) > 4번(여행지원) > 1번(무료계획)
+      let selectedAction = 2; // 기본값: 조사하기
+      
+      if (availableActions.includes(2)) {
+        selectedAction = 2; // 조사하기
+      } else if (availableActions.includes(3)) {
+        selectedAction = 3; // 집안일
+      } else if (availableActions.includes(4)) {
+        selectedAction = 4; // 여행지원
+      } else if (availableActions.includes(1)) {
+        selectedAction = 1; // 무료계획
+      } else {
+        selectedAction = availableActions[0]; // 남은 것 중 첫 번째
+      }
+
+      console.log(`🔥 AI 결심 토큰 사용: ${selectedAction}번 행동 수행`);
+
+      // 추가 행동 수행
+      await this.performAction(client, gameId, playerId, selectedAction);
+
+      await client.query('COMMIT');
+      console.log(`✅ AI 결심 토큰 사용 완료`);
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   /**
