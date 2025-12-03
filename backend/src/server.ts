@@ -110,7 +110,11 @@ app.get('/', (req, res) => {
 
 // AI 스케줄러 시작
 import { aiScheduler } from './services/AIScheduler';
+import { aiPlayerService } from './services/AIPlayerService';
 import { turnManager } from './services/TurnManager';
+
+// AIPlayerService에 Socket.IO 전달
+aiPlayerService.setSocketIO(io);
 
 aiScheduler.start();
 

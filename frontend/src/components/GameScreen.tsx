@@ -206,6 +206,11 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
       loadGameState();
     });
 
+    socket.on('game-state-updated', () => {
+      console.log('📡 게임 상태 업데이트 수신');
+      loadGameState();
+    });
+
     socket.on('player-moved', (data: any) => {
       if (data.playerId === playerId) {
         setHasMoved(true);

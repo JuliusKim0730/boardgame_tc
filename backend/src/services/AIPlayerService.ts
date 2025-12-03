@@ -1,4 +1,5 @@
 import { pool } from '../db/pool';
+import { Server } from 'socket.io';
 
 /**
  * AI 플레이어 게임플레이 알고리즘
@@ -11,6 +12,11 @@ import { pool } from '../db/pool';
  * 5. 찬스 카드: 상황에 맞게 대응
  */
 export class AIPlayerService {
+  private io: Server | null = null;
+
+  setSocketIO(io: Server) {
+    this.io = io;
+  }
   
   /**
    * AI 턴 실행
@@ -39,6 +45,9 @@ export class AIPlayerService {
       await this.performActionWithTransaction(gameId, playerId, action);
 
       console.log(`✅ AI 행동 완료`);
+      
+      // WebSocket으로 상태 업데이트 알림
+      await this.broadcastGameState(gameId);
 
       // 5. 결심 토큰 사용 결정
       const shouldUseToken = await this.shouldUseResolveTokenNow(gameId, playerId);
@@ -57,6 +66,36 @@ export class AIPlayerService {
     } catch (error: any) {
       console.error('❌ AI 턴 실행 중 에러:', error);
       throw error;
+    }
+  }
+
+  /**
+   * 게임 상태 브로드캐스트
+   */
+  private async broadcastGameState(gameId: string): Promise<void> {
+    if (!this.io) return;
+
+    const client = await pool.connect();
+    try {
+      // 룸 ID 조회
+      const roomResult = await client.query(
+        'SELECT room_id FROM games WHERE id = $1',
+        [gameId]
+      );
+      
+      if (roomResult.rows.length === 0) return;
+      
+      const roomId = roomResult.rows[0].room_id;
+      
+      // 게임 상태 업데이트 이벤트 발송
+      this.io.to(roomId).emit('game-state-updated', {
+        gameId,
+        timestamp: new Date()
+      });
+      
+      console.log(`📡 게임 상태 업데이트 브로드캐스트: ${roomId}`);
+    } finally {
+      client.release();
     }
   }
 
