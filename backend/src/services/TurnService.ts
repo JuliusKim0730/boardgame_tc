@@ -320,6 +320,29 @@ export class TurnService {
     console.log('playerStateId:', playerStateId);
     console.log('deckType:', deckType);
     
+    // 이미 사용된 카드 조회 (모든 플레이어의 손패 + 구매한 카드)
+    const usedCardsResult = await client.query(
+      `SELECT DISTINCT c.id 
+       FROM cards c
+       WHERE c.type = $1
+       AND (
+         EXISTS (
+           SELECT 1 FROM hands h
+           JOIN player_states ps ON h.player_state_id = ps.id
+           WHERE ps.game_id = $2 AND h.card_id = c.id
+         )
+         OR EXISTS (
+           SELECT 1 FROM purchased p
+           JOIN player_states ps ON p.player_state_id = ps.id
+           WHERE ps.game_id = $2 AND p.card_id = c.id
+         )
+       )`,
+      [deckType, gameId]
+    );
+    
+    const usedCardIds = new Set(usedCardsResult.rows.map((row: any) => row.id));
+    console.log(`📋 이미 사용된 ${deckType} 카드: ${usedCardIds.size}개`);
+    
     // 덱에서 카드 드로우
     const deckResult = await client.query(
       'SELECT card_order FROM decks WHERE game_id = $1 AND type = $2',
@@ -335,7 +358,6 @@ export class TurnService {
     try {
       const rawCardOrder = deckResult.rows[0].card_order;
       console.log('원본 card_order 타입:', typeof rawCardOrder);
-      console.log('원본 card_order 값:', rawCardOrder);
       
       if (typeof rawCardOrder === 'string') {
         cardOrder = JSON.parse(rawCardOrder);
@@ -350,30 +372,29 @@ export class TurnService {
       throw new Error('덱 데이터 파싱 실패');
     }
     
-    console.log('파싱된 덱 카드 수:', cardOrder.length);
-    console.log('덱 카드 ID 목록:', cardOrder);
+    // 사용되지 않은 카드만 필터링
+    const availableCards = cardOrder.filter((id: string) => !usedCardIds.has(id));
+    console.log(`✅ 사용 가능한 카드: ${availableCards.length}개 (전체 ${cardOrder.length}개 중)`);
     
-    // 덱이 비었으면 재충전 시도
-    if (cardOrder.length === 0) {
-      console.log(`⚠️ ${deckType} 덱이 비었습니다. 재충전 시도...`);
-      cardOrder = await this.refillDeck(client, gameId, deckType);
-      
-      if (cardOrder.length === 0) {
-        console.error(`❌ ${deckType} 덱 완전 소진`);
-        throw new Error(`${deckType} 덱에 더 이상 카드가 없습니다`);
-      }
+    if (availableCards.length === 0) {
+      console.error(`❌ ${deckType} 덱에 사용 가능한 카드가 없습니다`);
+      throw new Error(`${deckType} 덱에 더 이상 사용 가능한 카드가 없습니다`);
     }
     
-    const cardId = cardOrder.shift();
+    // 첫 번째 사용 가능한 카드 선택
+    const cardId = availableCards[0];
     console.log('뽑은 카드 ID:', cardId);
-    console.log('남은 카드 ID 목록:', cardOrder);
+    
+    // 덱에서 해당 카드 제거
+    const updatedCardOrder = cardOrder.filter((id: string) => id !== cardId);
+    console.log('남은 카드 ID 목록:', updatedCardOrder.length);
     
     // 덱 업데이트
     await client.query(
       'UPDATE decks SET card_order = $1 WHERE game_id = $2 AND type = $3',
-      [JSON.stringify(cardOrder), gameId, deckType]
+      [JSON.stringify(updatedCardOrder), gameId, deckType]
     );
-    console.log('덱 업데이트 완료, 남은 카드:', cardOrder.length);
+    console.log('덱 업데이트 완료, 남은 카드:', updatedCardOrder.length);
     
     // 카드 정보 조회
     const cardResult = await client.query('SELECT * FROM cards WHERE id = $1', [cardId]);
@@ -434,42 +455,8 @@ export class TurnService {
     return { card };
   }
 
-  // 덱 재충전 (버린 카드 더미 섞기)
-  private async refillDeck(client: any, gameId: string, deckType: string): Promise<any[]> {
-    // 버린 카드 더미 조회 (구매되지 않은 카드들)
-    const discardedResult = await client.query(
-      `SELECT c.id FROM cards c
-       WHERE c.type = $1
-       AND NOT EXISTS (
-         SELECT 1 FROM hands h
-         JOIN player_states ps ON h.player_state_id = ps.id
-         WHERE ps.game_id = $2 AND h.card_id = c.id
-       )
-       AND NOT EXISTS (
-         SELECT 1 FROM purchased p
-         JOIN player_states ps ON p.player_state_id = ps.id
-         WHERE ps.game_id = $2 AND p.card_id = c.id
-       )`,
-      [deckType, gameId]
-    );
-
-    if (discardedResult.rows.length === 0) {
-      return [];
-    }
-
-    // 카드 ID 배열 생성 및 섞기
-    const cardIds = discardedResult.rows.map((row: any) => row.id);
-    const shuffled = this.shuffleArray(cardIds);
-
-    // 덱 업데이트
-    await client.query(
-      'UPDATE decks SET card_order = $1 WHERE game_id = $2 AND type = $3',
-      [JSON.stringify(shuffled), gameId, deckType]
-    );
-
-    console.log(`✅ ${deckType} 덱 재충전 완료: ${shuffled.length}장`);
-    return shuffled;
-  }
+  // 덱 재충전은 더 이상 필요 없음 (모든 카드가 유니크하므로)
+  // 사용된 카드는 다시 사용할 수 없음
 
   // 배열 섞기 (Fisher-Yates)
   private shuffleArray(array: any[]): any[] {

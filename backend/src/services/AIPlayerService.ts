@@ -55,6 +55,8 @@ export class AIPlayerService {
       if (shouldUseToken) {
         console.log(`🔥 AI 결심 토큰 사용 결정`);
         await this.useResolveToken(gameId, playerId);
+        // 결심 토큰 사용 후 상태 업데이트 브로드캐스트
+        await this.broadcastGameState(gameId);
       }
 
       // 6. 턴 종료
@@ -65,6 +67,35 @@ export class AIPlayerService {
       
     } catch (error: any) {
       console.error('❌ AI 턴 실행 중 에러:', error);
+      
+      // 프론트엔드에 에러 알림
+      if (this.io) {
+        try {
+          const client = await pool.connect();
+          try {
+            const roomResult = await client.query(
+              'SELECT room_id FROM games WHERE id = $1',
+              [gameId]
+            );
+            
+            if (roomResult.rows.length > 0) {
+              const roomId = roomResult.rows[0].room_id;
+              this.io.to(roomId).emit('ai-turn-error', {
+                gameId,
+                playerId,
+                error: error.message || 'AI 턴 실행 중 오류가 발생했습니다',
+                timestamp: new Date()
+              });
+              console.log(`📡 AI 에러 알림 전송: ${roomId}`);
+            }
+          } finally {
+            client.release();
+          }
+        } catch (notifyError) {
+          console.error('에러 알림 전송 실패:', notifyError);
+        }
+      }
+      
       throw error;
     }
   }
@@ -573,8 +604,8 @@ export class AIPlayerService {
     const client = await pool.connect();
     
     try {
-      // 타임아웃 설정 (10초)
-      await client.query('SET statement_timeout = 10000');
+      // 타임아웃 설정 (5초)
+      await client.query('SET statement_timeout = 5000');
       await client.query('BEGIN');
       
       // 현재 위치 조회
@@ -647,8 +678,8 @@ export class AIPlayerService {
     const client = await pool.connect();
     
     try {
-      // 타임아웃 설정 (10초)
-      await client.query('SET statement_timeout = 10000');
+      // 타임아웃 설정 (5초)
+      await client.query('SET statement_timeout = 5000');
       await client.query('BEGIN');
       
       const stateResult = await client.query(

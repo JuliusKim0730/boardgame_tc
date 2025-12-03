@@ -271,6 +271,14 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
       api.checkResolveRecovery(gameId).catch(console.error);
     });
 
+    socket.on('ai-turn-error', (data: any) => {
+      console.error('❌ AI 턴 에러:', data);
+      setMessage(`⚠️ AI 플레이어 오류: ${data.error}`);
+      setError(data.error);
+      // 상태 새로고침 시도
+      setTimeout(() => loadGameState(), 1000);
+    });
+
     // Socket 재연결 시 상태 동기화
     socket.on('reconnect', () => {
       console.log('🔄 Socket reconnected, reloading game state');
