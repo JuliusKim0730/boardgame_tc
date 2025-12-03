@@ -133,9 +133,12 @@ export class TurnManager {
       if (completedTurns >= totalPlayers) {
         // 하루 종료, 다음 날로
         const newDay = currentDay + 1;
+        
+        console.log(`📅 Day ${currentDay} 완료 → Day ${newDay} 시작`);
 
         if (newDay > 14) {
           // 게임 종료
+          console.log('🏁 14일차 완료 - 게임 종료');
           await client.query(
             'UPDATE games SET status = $1, current_turn_player_id = NULL WHERE id = $2',
             ['finalizing', gameId]
@@ -150,19 +153,44 @@ export class TurnManager {
           [newDay, gameId]
         );
 
-        // 7일차 시작 시 결심 토큰 재충전
+        // Day 8 시작 시 결심 토큰 회복 (1-7일차 동안 미사용 시)
         if (newDay === 8) {
+          console.log('🔥 Day 8 시작 - 결심 토큰 회복 체크');
+          // 1-7일차 동안 결심 토큰 사용하지 않은 플레이어에게 토큰 1개 회복
           await client.query(
-            'UPDATE player_states SET resolve_token = 1 WHERE game_id = $1',
+            `UPDATE player_states ps
+             SET resolve_token = LEAST(resolve_token + 1, 2)
+             WHERE game_id = $1
+             AND NOT EXISTS (
+               SELECT 1 FROM event_logs el
+               WHERE el.game_id = $1
+               AND el.event_type = 'resolve_token_used'
+               AND el.data->>'playerId' = ps.player_id::text
+               AND el.created_at < NOW()
+             )`,
             [gameId]
           );
         }
 
-        // 선플레이어 변경 (이전 2번째 플레이어)
+        // 턴 순서 재배치 (선플레이어 변경)
+        // 현재 0번이 마지막으로 가고, 1번이 0번이 됨
+        await client.query(
+          `UPDATE player_states 
+           SET turn_order = CASE 
+             WHEN turn_order = 0 THEN $1 - 1
+             ELSE turn_order - 1
+           END
+           WHERE game_id = $2`,
+          [totalPlayers, gameId]
+        );
+        
+        console.log(`🔄 선플레이어 변경: 이전 #2 → 새 #1`);
+
+        // 새로운 선플레이어 (turn_order = 0)
         const nextPlayerResult = await client.query(
           `SELECT player_id FROM player_states 
-           WHERE game_id = $1 AND turn_order = $2`,
-          [gameId, 1] // 2번째 플레이어가 다음 선플레이어
+           WHERE game_id = $1 AND turn_order = 0`,
+          [gameId]
         );
 
         if (nextPlayerResult.rows.length > 0) {

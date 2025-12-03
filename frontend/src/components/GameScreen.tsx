@@ -367,20 +367,23 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
         await loadGameState(true);
       }, 500);
       
-      // 자동 턴 종료
-      setTimeout(async () => {
-        try {
-          await api.endTurn(gameId, playerId);
-          setMessage('턴이 종료되었습니다.');
-          setHasMoved(false);
-          setHasActed(false);
-        } catch (error: any) {
-          setMessage(error.response?.data?.error || '턴 종료 실패');
-        }
-      }, 2000);
+      // 턴 종료 버튼 표시 (결심 토큰 사용 여부 선택 가능)
+      setMessage('행동 완료! 턴을 종료하거나 결심 토큰을 사용하세요.');
     } catch (error: any) {
       console.error('행동 실패:', error);
       setMessage(error.response?.data?.error || '행동 실패');
+    }
+  };
+
+  const handleEndTurn = async () => {
+    try {
+      await api.endTurn(gameId, playerId);
+      setMessage('턴이 종료되었습니다.');
+      setHasMoved(false);
+      setHasActed(false);
+      await loadGameState();
+    } catch (error: any) {
+      setMessage(error.response?.data?.error || '턴 종료 실패');
     }
   };
 
@@ -658,6 +661,23 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
                   </button>
                 )}
               </div>
+            </div>
+          )}
+          
+          {/* 턴 종료 버튼 */}
+          {isMyTurn && hasMoved && hasActed && (
+            <div className="turn-end-section">
+              <button
+                className="btn-end-turn btn-primary"
+                onClick={handleEndTurn}
+              >
+                턴 종료
+              </button>
+              {playerState && playerState.resolve_token > 0 && (
+                <div className="resolve-token-hint">
+                  💡 결심 토큰({playerState.resolve_token}개)을 사용하여 추가 행동을 할 수 있습니다
+                </div>
+              )}
             </div>
           )}
         </div>
