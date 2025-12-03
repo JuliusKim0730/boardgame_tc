@@ -19,9 +19,11 @@ export const pool = new Pool({
 });
 
 // 연결 에러 핸들링
-pool.on('error', (err, client) => {
+pool.on('error', (err: Error & { code?: string }, client) => {
   console.error('❌ 데이터베이스 풀 에러:', err.message);
-  console.error('에러 코드:', err.code);
+  if (err.code) {
+    console.error('에러 코드:', err.code);
+  }
   
   // 연결 종료 에러는 무시 (정상적인 종료)
   if (err.code === 'XX000' || err.message.includes('DbHandler exited')) {
