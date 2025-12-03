@@ -60,6 +60,7 @@ export class AIScheduler {
           g.id as game_id,
           g.current_turn_player_id,
           p.id as player_id,
+          p.is_ai,
           u.nickname,
           ps.position,
           ps.money,
@@ -69,19 +70,26 @@ export class AIScheduler {
         JOIN players p ON p.id = ps.player_id
         JOIN users u ON u.id = p.user_id
         WHERE g.status = 'running'
-        AND (u.nickname ~ '로봇|AI|봇|컴퓨터|기계|알고리즘')
+        AND p.is_ai = true
       `);
+      
+      console.log(`🔍 AI 턴 체크: ${result.rows.length}개 발견`);
 
       // 클라이언트 먼저 해제
       client.release();
       client = null;
 
+      if (result.rows.length > 0) {
+        console.log(`🎯 AI 턴 발견:`, result.rows.map(r => `${r.nickname} (게임 ${r.game_id})`));
+      }
+
       for (const row of result.rows) {
-        console.log(`🤖 AI 턴 실행: ${row.nickname} (게임 ${row.game_id})`);
+        console.log(`🤖 AI 턴 실행 시작: ${row.nickname} (게임 ${row.game_id}, 플레이어 ${row.player_id})`);
         
         try {
           // AI 턴 실행 (새로운 연결 사용)
           await aiPlayerService.executeTurn(row.game_id, row.player_id);
+          console.log(`✅ AI 턴 실행 완료: ${row.nickname}`);
           
           // 잠시 대기 (자연스러운 플레이를 위해)
           await this.delay(2000);

@@ -238,14 +238,14 @@ export class RoomService {
           targetTime.setSeconds(targetTime.getSeconds() + slotIndex);
           
           await client.query(
-            'INSERT INTO players (user_id, room_id, created_at) VALUES ($1, $2, $3)',
-            [userId, roomId, targetTime]
+            'INSERT INTO players (user_id, room_id, is_ai, created_at) VALUES ($1, $2, $3, $4)',
+            [userId, roomId, true, targetTime]
           );
         } else {
           // created_at이 없으면 그냥 추가
           await client.query(
-            'INSERT INTO players (user_id, room_id) VALUES ($1, $2)',
-            [userId, roomId]
+            'INSERT INTO players (user_id, room_id, is_ai) VALUES ($1, $2, $3)',
+            [userId, roomId, true]
           );
         }
       } else if (action === 'ban') {
