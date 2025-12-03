@@ -3,10 +3,10 @@ import { api } from '../services/api';
 import './LobbyScreen.css';
 
 interface Props {
-  onGameStart: (roomId: string, gameId: string, playerId: string, userId: string) => void;
+  onRoomCreated: (roomId: string, roomCode: string, userId: string, isHost: boolean) => void;
 }
 
-function LobbyScreen({ onGameStart }: Props) {
+function LobbyScreen({ onRoomCreated }: Props) {
   const [mode, setMode] = useState<'menu' | 'create' | 'join'>('menu');
   const [nickname, setNickname] = useState('');
   const [roomCode, setRoomCode] = useState('');
@@ -24,13 +24,10 @@ function LobbyScreen({ onGameStart }: Props) {
 
     try {
       const response = await api.createRoom(nickname);
-      const { roomId, userId } = response.data;
+      const { roomId, code, userId } = response.data;
       
-      // 대기실로 이동 (임시로 게임 시작)
-      const startResponse = await api.startGame(roomId);
-      const { gameId } = startResponse.data;
-      
-      onGameStart(roomId, gameId, userId, userId);
+      // 대기실로 이동
+      onRoomCreated(roomId, code, userId, true);
     } catch (err: any) {
       setError(err.response?.data?.error || '방 생성 실패');
     } finally {
@@ -51,11 +48,8 @@ function LobbyScreen({ onGameStart }: Props) {
       const response = await api.joinRoom(roomCode, nickname);
       const { roomId, userId } = response.data;
       
-      // 임시: 바로 게임 시작 (실제로는 대기실 필요)
-      const startResponse = await api.startGame(roomId);
-      const { gameId } = startResponse.data;
-      
-      onGameStart(roomId, gameId, userId, userId);
+      // 대기실로 이동
+      onRoomCreated(roomId, roomCode, userId, false);
     } catch (err: any) {
       setError(err.response?.data?.error || '방 참여 실패');
     } finally {
