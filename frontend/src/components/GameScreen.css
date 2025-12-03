@@ -699,3 +699,73 @@
   font-size: 14px;
   font-weight: 600;
 }
+
+/* 결심 토큰 사용 섹션 */
+.resolve-token-section {
+  margin-top: 20px;
+  padding: 20px;
+  background: linear-gradient(135deg, #fff5f5 0%, #ffe5e5 100%);
+  border: 2px solid #ff6b6b;
+  border-radius: 12px;
+}
+
+.resolve-token-hint {
+  text-align: center;
+  font-size: 16px;
+  font-weight: 700;
+  color: #c92a2a;
+  margin-bottom: 16px;
+}
+
+.resolve-token-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.resolve-hint {
+  text-align: center;
+  font-size: 13px;
+  color: #666;
+  margin: 0;
+}
+
+.resolve-action-buttons {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.btn-resolve-action {
+  padding: 12px 8px;
+  background: linear-gradient(135deg, #ff6b6b 0%, #fa5252 100%);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s;
+  box-shadow: 0 2px 8px rgba(255, 107, 107, 0.3);
+}
+
+.btn-resolve-action:hover:not(.disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(255, 107, 107, 0.5);
+}
+
+.btn-resolve-action:active:not(.disabled) {
+  transform: translateY(0);
+}
+
+.btn-resolve-action.disabled {
+  background: #e5e7eb;
+  color: #9ca3af;
+  cursor: not-allowed;
+  box-shadow: none;
+  opacity: 0.5;
+}
+
+.btn-resolve-action.disabled:hover {
+  transform: none;
+}

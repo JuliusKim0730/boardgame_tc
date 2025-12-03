@@ -129,7 +129,10 @@ export class TurnManager {
         [gameId, currentDay]
       );
       const completedTurns = parseInt(turnsResult.rows[0].completed);
+      
+      console.log(`📊 Day ${currentDay} 턴 완료 현황: ${completedTurns}/${totalPlayers}`);
 
+      // 모든 플레이어가 턴을 마쳤으면 다음 날로
       if (completedTurns >= totalPlayers) {
         // 하루 종료, 다음 날로
         const newDay = currentDay + 1;

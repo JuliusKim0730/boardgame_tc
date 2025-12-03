@@ -9,6 +9,7 @@ import ContributeModal from './ContributeModal';
 import ResultScreen from './ResultScreen';
 import ActionLog from './ActionLog';
 import CardDrawModal from './CardDrawModal';
+import FinalPurchaseModal from './FinalPurchaseModal';
 import './GameScreen.css';
 
 interface Props {
@@ -59,6 +60,8 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
   const [jointPlanTotal, setJointPlanTotal] = useState(0);
   const [drawnCard, setDrawnCard] = useState<any>(null);
   const [showCardDrawModal, setShowCardDrawModal] = useState(false);
+  const [showFinalPurchase, setShowFinalPurchase] = useState(false);
+  const [finalPurchaseComplete, setFinalPurchaseComplete] = useState(false);
 
   // 게임 상태 로드
   const loadGameState = async (preserveActionState = false) => {
@@ -242,10 +245,9 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
     });
 
     socket.on('game-ended', () => {
-      setMessage('게임이 종료되었습니다! 최종 정산 중...');
-      setTimeout(() => {
-        setShowResult(true);
-      }, 2000);
+      setMessage('게임이 종료되었습니다! 최종 구매를 진행하세요.');
+      // Day 14 종료 시 최종 구매 모달 표시
+      setShowFinalPurchase(true);
     });
 
     socket.on('day-7-started', () => {
@@ -387,6 +389,43 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
     }
   };
 
+  const handleUseResolveToken = async (actionType: number) => {
+    try {
+      // 결심 토큰 사용
+      await api.useResolveToken(gameId, playerId, actionType);
+      
+      // 선택한 행동 수행
+      const result = await api.performAction(gameId, playerId, actionType);
+      
+      if (result.data?.message) {
+        setMessage(result.data.message);
+      } else {
+        setMessage(`결심 토큰 사용! ${getActionName(actionType)} 완료`);
+      }
+      
+      // 상태 새로고침
+      await loadGameState(true);
+    } catch (error: any) {
+      setMessage(error.response?.data?.error || '결심 토큰 사용 실패');
+    }
+  };
+
+  const handleFinalPurchase = async (cardIds: string[]) => {
+    try {
+      await api.finalPurchase(gameId, playerId, cardIds);
+      setMessage(`${cardIds.length}장의 카드를 구매했습니다!`);
+      setShowFinalPurchase(false);
+      setFinalPurchaseComplete(true);
+      
+      // 모든 플레이어가 구매 완료했는지 확인 후 결과 화면으로
+      setTimeout(() => {
+        setShowResult(true);
+      }, 1500);
+    } catch (error: any) {
+      setMessage(error.response?.data?.error || '최종 구매 실패');
+    }
+  };
+
   const handleChanceOptionSelect = async (option: 'card' | 'money') => {
     setShowChanceOption(false);
     
@@ -436,6 +475,20 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
 
   const isMyTurn = gameState.currentTurnPlayerId === playerId;
 
+  // 최종 구매 모달 표시
+  if (showFinalPurchase && !finalPurchaseComplete) {
+    return (
+      <div className="game-screen">
+        <FinalPurchaseModal
+          isOpen={true}
+          handCards={playerState?.hand_cards || []}
+          currentMoney={playerState?.money || 0}
+          onPurchase={handleFinalPurchase}
+        />
+      </div>
+    );
+  }
+
   if (showResult) {
     return (
       <ResultScreen
@@ -444,6 +497,8 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
         playerId={playerId}
         onRestart={() => {
           setShowResult(false);
+          setShowFinalPurchase(false);
+          setFinalPurchaseComplete(false);
           loadGameState();
         }}
         onBackToLobby={onBackToLobby}
@@ -664,7 +719,7 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
             </div>
           )}
           
-          {/* 턴 종료 버튼 */}
+          {/* 턴 종료 버튼 및 결심 토큰 사용 */}
           {isMyTurn && hasMoved && hasActed && (
             <div className="turn-end-section">
               <button
@@ -673,9 +728,27 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
               >
                 턴 종료
               </button>
+              
               {playerState && playerState.resolve_token > 0 && (
-                <div className="resolve-token-hint">
-                  💡 결심 토큰({playerState.resolve_token}개)을 사용하여 추가 행동을 할 수 있습니다
+                <div className="resolve-token-section">
+                  <div className="resolve-token-hint">
+                    🔥 결심 토큰 {playerState.resolve_token}개 보유
+                  </div>
+                  <div className="resolve-token-actions">
+                    <p className="resolve-hint">추가 행동을 선택하세요 (직전 행동 제외)</p>
+                    <div className="resolve-action-buttons">
+                      {[1, 2, 3, 4, 5, 6].map(num => (
+                        <button
+                          key={num}
+                          className={`btn-resolve-action ${num === playerState.position ? 'disabled' : ''}`}
+                          onClick={() => handleUseResolveToken(num)}
+                          disabled={num === playerState.position}
+                        >
+                          {num}. {getActionName(num)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
