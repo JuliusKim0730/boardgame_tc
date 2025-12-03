@@ -28,9 +28,9 @@ export class AIPlayerService {
       console.log(`🤖 AI 이동 결정: ${gameState.playerState.position} → ${targetPosition}`);
       await this.move(client, gameId, playerId, targetPosition);
 
-      // 2. 행동 결정
-      const action = await this.decideAction(gameState, targetPosition);
-      console.log(`🤖 AI 행동 결정: ${action}번`);
+      // 2. 행동 결정 (이동한 칸의 행동)
+      const action = targetPosition;  // 이동한 칸의 행동 수행
+      console.log(`🤖 AI 행동 결정: ${action}번 (위치 ${targetPosition})`);
       await this.performAction(client, gameId, playerId, action);
 
       // 3. 찬스 카드 처리 (필요 시)
