@@ -9,6 +9,7 @@ import { aiPlayerService } from './AIPlayerService';
 export class AIScheduler {
   private checkInterval: NodeJS.Timeout | null = null;
   private processing = false;
+  private executingGames = new Set<string>(); // 현재 실행 중인 게임 ID
 
   /**
    * 스케줄러 시작
@@ -84,7 +85,16 @@ export class AIScheduler {
       }
 
       for (const row of result.rows) {
+        // 이미 실행 중인 게임은 스킵
+        if (this.executingGames.has(row.game_id)) {
+          console.log(`⏭️ 게임 ${row.game_id}는 이미 실행 중, 스킵`);
+          continue;
+        }
+        
         console.log(`🤖 AI 턴 실행 시작: ${row.nickname} (게임 ${row.game_id}, 플레이어 ${row.player_id})`);
+        
+        // 실행 중 표시
+        this.executingGames.add(row.game_id);
         
         try {
           // AI 턴 실행 (새로운 연결 사용)
@@ -98,8 +108,12 @@ export class AIScheduler {
           // 데이터베이스 풀 에러 처리
           if (error?.code === 'XX000' || error?.message?.includes('DbHandler exited')) {
             console.error('⚠️  데이터베이스 연결 문제 감지, 다음 체크에서 재시도');
+            this.executingGames.delete(row.game_id);
             return;
           }
+        } finally {
+          // 실행 완료 표시 제거
+          this.executingGames.delete(row.game_id);
         }
       }
     } catch (error: any) {

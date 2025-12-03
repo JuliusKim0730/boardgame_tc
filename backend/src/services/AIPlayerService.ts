@@ -566,11 +566,15 @@ export class AIPlayerService {
   }
 
   /**
-   * 이동 실행 (트랜잭션 포함)
+   * 이동 실행 (트랜잭션 포함, 재시도 로직)
    */
-  private async moveWithTransaction(gameId: string, playerId: string, position: number): Promise<void> {
+  private async moveWithTransaction(gameId: string, playerId: string, position: number, retryCount = 0): Promise<void> {
+    const maxRetries = 3;
     const client = await pool.connect();
+    
     try {
+      // 타임아웃 설정 (10초)
+      await client.query('SET statement_timeout = 10000');
       await client.query('BEGIN');
       
       // 현재 위치 조회
@@ -578,6 +582,11 @@ export class AIPlayerService {
         'SELECT position FROM player_states WHERE game_id = $1 AND player_id = $2',
         [gameId, playerId]
       );
+      
+      if (stateResult.rows.length === 0) {
+        throw new Error('플레이어 상태를 찾을 수 없습니다');
+      }
+      
       const currentPosition = stateResult.rows[0].position;
       
       // 위치 업데이트
@@ -593,8 +602,21 @@ export class AIPlayerService {
       );
       
       await client.query('COMMIT');
-    } catch (error) {
+      console.log(`✅ AI 이동 완료: ${currentPosition} → ${position}`);
+      
+    } catch (error: any) {
       await client.query('ROLLBACK');
+      
+      // 타임아웃 에러이고 재시도 가능하면 재시도
+      if (error.code === '57014' && retryCount < maxRetries) {
+        console.log(`⚠️ 이동 타임아웃, 재시도 ${retryCount + 1}/${maxRetries}`);
+        client.release();
+        
+        // 잠시 대기 후 재시도
+        await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
+        return this.moveWithTransaction(gameId, playerId, position, retryCount + 1);
+      }
+      
       throw error;
     } finally {
       client.release();
@@ -602,11 +624,15 @@ export class AIPlayerService {
   }
 
   /**
-   * 행동 실행 (트랜잭션 포함)
+   * 행동 실행 (트랜잭션 포함, 재시도 로직)
    */
-  private async performActionWithTransaction(gameId: string, playerId: string, action: number): Promise<void> {
+  private async performActionWithTransaction(gameId: string, playerId: string, action: number, retryCount = 0): Promise<void> {
+    const maxRetries = 3;
     const client = await pool.connect();
+    
     try {
+      // 타임아웃 설정 (10초)
+      await client.query('SET statement_timeout = 10000');
       await client.query('BEGIN');
       
       const stateResult = await client.query(
@@ -687,8 +713,21 @@ export class AIPlayerService {
       );
       
       await client.query('COMMIT');
-    } catch (error) {
+      console.log(`✅ AI 행동 완료: ${action}번`);
+      
+    } catch (error: any) {
       await client.query('ROLLBACK');
+      
+      // 타임아웃 에러이고 재시도 가능하면 재시도
+      if (error.code === '57014' && retryCount < maxRetries) {
+        console.log(`⚠️ 행동 타임아웃, 재시도 ${retryCount + 1}/${maxRetries}`);
+        client.release();
+        
+        // 잠시 대기 후 재시도
+        await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
+        return this.performActionWithTransaction(gameId, playerId, action, retryCount + 1);
+      }
+      
       throw error;
     } finally {
       client.release();
