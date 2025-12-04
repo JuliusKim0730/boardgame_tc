@@ -789,13 +789,14 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
             </div>
           </div>
           
-          {/* 행동 선택 버튼 - 상시 노출 */}
-          {isMyTurn && !hasActed && (
+          {/* 행동 선택 버튼 - 내 턴일 때 항상 노출 */}
+          {isMyTurn && (
             <div className="action-selection">
               <h3>행동 선택</h3>
               <p className="action-hint">
                 📍 현재 위치: {playerState?.position}번 칸 - {getActionName(playerState?.position || 1)}
                 {!hasMoved && <span style={{ color: '#ff9800', marginLeft: '10px' }}>⚠️ 먼저 이동하세요</span>}
+                {hasActed && <span style={{ color: '#4caf50', marginLeft: '10px' }}>✅ 행동 완료</span>}
               </p>
               <div className="action-buttons">
                 {playerState?.position === 6 ? (
@@ -809,8 +810,11 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
                         key={num}
                         className="btn-action"
                         onClick={() => handleAction(num)}
-                        disabled={!hasMoved}
-                        style={{ opacity: hasMoved ? 1 : 0.5, cursor: hasMoved ? 'pointer' : 'not-allowed' }}
+                        disabled={!hasMoved || hasActed}
+                        style={{ 
+                          opacity: (hasMoved && !hasActed) ? 1 : 0.5, 
+                          cursor: (hasMoved && !hasActed) ? 'pointer' : 'not-allowed' 
+                        }}
                       >
                         {num}. {getActionName(num)}
                       </button>
@@ -821,8 +825,11 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
                   <button
                     className="btn-action btn-action-primary"
                     onClick={() => handleAction(playerState?.position || 1)}
-                    disabled={!hasMoved}
-                    style={{ opacity: hasMoved ? 1 : 0.5, cursor: hasMoved ? 'pointer' : 'not-allowed' }}
+                    disabled={!hasMoved || hasActed}
+                    style={{ 
+                      opacity: (hasMoved && !hasActed) ? 1 : 0.5, 
+                      cursor: (hasMoved && !hasActed) ? 'pointer' : 'not-allowed' 
+                    }}
                   >
                     {playerState?.position}. {getActionName(playerState?.position || 1)}
                   </button>
