@@ -299,11 +299,18 @@ export class TurnManager {
           await this.broadcastGameState(gameId);
           
           console.log(`✅ 다음 턴 시작: playerId=${nextPlayerId}, isAI=${isAI}`);
+          
+          // AI가 아니면 여기서 멈춤 (사용자가 직접 플레이)
+          if (!isAI) {
+            console.log(`👤 사용자 턴 시작 대기: playerId=${nextPlayerId}`);
+          }
+          
           return { nextPlayerId, isGameEnd: false, isAI };
         }
       }
 
       await client.query('COMMIT');
+      console.log('⚠️ 다음 플레이어를 찾을 수 없습니다');
       return { nextPlayerId: null, isGameEnd: false, isAI: false };
     } catch (error) {
       await client.query('ROLLBACK');
@@ -338,7 +345,7 @@ export class TurnManager {
       
       // 플레이어 상태 조회
       const playersResult = await client.query(
-        `SELECT ps.*, u.nickname as name, u.is_ai 
+        `SELECT ps.*, u.nickname as name, p.is_ai 
          FROM player_states ps
          JOIN players p ON ps.player_id = p.id
          JOIN users u ON p.user_id = u.id
