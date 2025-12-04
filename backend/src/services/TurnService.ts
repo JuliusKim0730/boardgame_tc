@@ -190,9 +190,9 @@ export class TurnService {
     // Turn Lock 검증
     try {
       turnManager.validateTurn(gameId, playerId);
-      console.log('턴 검증 통과');
+      console.log('✅ 턴 검증 통과');
     } catch (error) {
-      console.error('턴 검증 실패:', error);
+      console.error('❌ 턴 검증 실패:', error);
       throw error;
     }
 
@@ -204,7 +204,18 @@ export class TurnService {
         'SELECT * FROM player_states WHERE game_id = $1 AND player_id = $2',
         [gameId, playerId]
       );
+      
+      if (stateResult.rows.length === 0) {
+        console.error('❌ 플레이어 상태를 찾을 수 없습니다');
+        throw new Error('플레이어 상태를 찾을 수 없습니다');
+      }
+      
       const playerState = stateResult.rows[0];
+      console.log('✅ 플레이어 상태 조회 완료:', {
+        position: playerState.position,
+        money: playerState.money,
+        resolve_token: playerState.resolve_token
+      });
       
       // 2인 플레이 여부 확인
       const playerCountResult = await client.query(
@@ -304,6 +315,8 @@ export class TurnService {
         [gameId, `action_${actionType}`, JSON.stringify({ playerId, actionType, result })]
       );
       
+      console.log('✅ 행동 처리 완료:', { actionType, result: result.message || 'success' });
+      
       await client.query('COMMIT');
       
       // 상태 업데이트 브로드캐스트
@@ -333,8 +346,15 @@ export class TurnService {
       }
       
       return result;
-    } catch (error) {
+    } catch (error: any) {
       await client.query('ROLLBACK');
+      console.error('❌ 행동 처리 중 에러:', {
+        error: error.message,
+        stack: error.stack,
+        gameId,
+        playerId,
+        actionType
+      });
       throw error;
     } finally {
       client.release();
