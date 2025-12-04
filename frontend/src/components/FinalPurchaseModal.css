@@ -210,6 +210,63 @@
   transform: translateY(-2px);
 }
 
+/* 여행지 카드 정보 */
+.travel-card-info-purchase {
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+  border: 2px solid #f59e0b;
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 24px;
+}
+
+.travel-card-header-purchase {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.travel-icon {
+  font-size: 24px;
+}
+
+.travel-name {
+  font-size: 18px;
+  font-weight: 700;
+  color: #92400e;
+}
+
+.travel-multipliers-purchase {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.multiplier-tag {
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.multiplier-tag.mult-3 {
+  background: #dcfce7;
+  color: #166534;
+  border: 2px solid #22c55e;
+}
+
+.multiplier-tag.mult-2 {
+  background: #dbeafe;
+  color: #1e40af;
+  border: 2px solid #3b82f6;
+}
+
+.multiplier-tag.mult-1 {
+  background: #f3f4f6;
+  color: #6b7280;
+  border: 2px solid #d1d5db;
+}
+
 @media (max-width: 768px) {
   .purchase-info {
     grid-template-columns: 1fr;

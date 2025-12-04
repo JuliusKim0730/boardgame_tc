@@ -11,6 +11,8 @@ import ActionLog from './ActionLog';
 import CardDrawModal from './CardDrawModal';
 import FinalPurchaseModal from './FinalPurchaseModal';
 import ChanceInteractionModal from './ChanceInteractionModal';
+import ExtraActionModal from './ExtraActionModal';
+import JointPlanSelectModal from './JointPlanSelectModal';
 import './GameScreen.css';
 
 interface Props {
@@ -72,7 +74,9 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
   const [finalPurchaseComplete, setFinalPurchaseComplete] = useState(false);
   const [chanceInteraction, setChanceInteraction] = useState<any>(null);
   const [showChanceInteraction, setShowChanceInteraction] = useState(false);
-  const [error, setError] = useState<string>('');
+  const [showExtraAction, setShowExtraAction] = useState(false);
+  const [extraActionType, setExtraActionType] = useState<'extra_action' | 'repeat_current' | 'buddy_action'>('extra_action');
+  const [showJointPlanSelect, setShowJointPlanSelect] = useState(false);
 
   // 게임 상태 로드
   const loadGameState = async (preserveActionState = false) => {
@@ -251,6 +255,34 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
       if (data.playerId === playerId) {
         setHasActed(true);
         
+        // 찬스 카드 특수 효과 처리
+        if (data.result?.type === 'special') {
+          if (data.result.action === 'extra_action') {
+            // CH18: 체력이 넘친다!
+            setExtraActionType('extra_action');
+            setShowExtraAction(true);
+            setMessage('체력이 넘친다! 이동 없이 행동 1회를 수행할 수 있습니다.');
+            return;
+          } else if (data.result.action === 'repeat_current') {
+            // CH19: 반전의 기회
+            setExtraActionType('repeat_current');
+            setShowExtraAction(true);
+            setMessage('반전의 기회! 현재 칸에서 행동을 1회 더 수행할 수 있습니다.');
+            return;
+          } else if (data.result.action === 'select_joint_plan') {
+            // CH17: 여행 팜플렛
+            setShowJointPlanSelect(true);
+            setMessage('여행 팜플렛! 공동 목표 카드를 선택하세요.');
+            return;
+          }
+        } else if (data.result?.type === 'catchup' && data.result.action === 'buddy_action') {
+          // CH25: 동행 버디 - 대상 선택 후 추가 행동
+          setExtraActionType('buddy_action');
+          setShowExtraAction(true);
+          setMessage('동행 버디! 추가 행동 1회를 수행할 수 있습니다.');
+          return;
+        }
+        
         // 카드를 뽑은 경우 모달 표시
         if (data.result?.card) {
           setDrawnCard(data.result.card);
@@ -329,15 +361,13 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
       setShowResult(true);
     });
 
-    socket.on('day-7-started', () => {
-      setMessage('📅 7일차 시작! 결심 토큰 회복 체크 중...');
-      api.checkResolveRecovery(gameId).catch(console.error);
+    socket.on('day-8-started', () => {
+      setMessage('📅 8일차 시작! 결심 토큰 회복 체크 중...');
     });
 
     socket.on('ai-turn-error', (data: any) => {
       console.error('❌ AI 턴 에러:', data);
       setMessage(`⚠️ AI 플레이어 오류: ${data.error}`);
-      setError(data.error);
       // 상태 새로고침 시도
       setTimeout(() => loadGameState(), 1000);
     });
@@ -579,16 +609,53 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
     setChanceInteraction(null);
   };
 
+  const handleExtraAction = async (actionType: number) => {
+    try {
+      // 추가 행동 수행
+      const response = await api.extraAction(gameId, playerId, actionType, true);
+      
+      setShowExtraAction(false);
+      
+      if (response.data?.message) {
+        setMessage(response.data.message);
+      } else {
+        setMessage(`추가 행동 완료: ${getActionName(actionType)}`);
+      }
+      
+      // 상태 새로고침
+      await loadGameState(true);
+    } catch (error: any) {
+      console.error('추가 행동 실패:', error);
+      setMessage(error.response?.data?.error || '추가 행동 실패');
+    }
+  };
+
+  const handleJointPlanSelect = async (cardId: string) => {
+    try {
+      await api.selectJointPlan(gameId, cardId);
+      setShowJointPlanSelect(false);
+      setMessage('공동 목표 카드가 선택되었습니다!');
+      
+      // 상태 새로고침
+      await loadGameState(true);
+    } catch (error: any) {
+      console.error('공동 목표 선택 실패:', error);
+      setMessage(error.response?.data?.error || '공동 목표 선택 실패');
+    }
+  };
+
   const isMyTurn = gameState.currentTurnPlayerId === playerId;
 
   // 최종 구매 모달 표시
   if (showFinalPurchase && !finalPurchaseComplete) {
+    const myPlayer = allPlayers.find(p => p.player_id === playerId);
     return (
       <div className="game-screen">
         <FinalPurchaseModal
           isOpen={true}
           handCards={playerState?.hand_cards || []}
           currentMoney={playerState?.money || 0}
+          travelCard={myPlayer?.travelCard}
           onPurchase={handleFinalPurchase}
         />
       </div>
@@ -1008,6 +1075,21 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
         }
         onResponse={handleChanceResponse}
         onCancel={handleChanceCancel}
+      />
+
+      <ExtraActionModal
+        isOpen={showExtraAction}
+        type={extraActionType}
+        currentPosition={playerState?.position}
+        availableActions={extraActionType === 'extra_action' ? [1, 2, 3, 4, 5, 6] : undefined}
+        onSelectAction={handleExtraAction}
+        onCancel={() => setShowExtraAction(false)}
+      />
+
+      <JointPlanSelectModal
+        isOpen={showJointPlanSelect}
+        onSelect={handleJointPlanSelect}
+        onCancel={() => setShowJointPlanSelect(false)}
       />
     </div>
   );

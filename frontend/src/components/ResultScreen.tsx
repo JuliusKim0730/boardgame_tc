@@ -26,6 +26,7 @@ interface PlayerResult {
   };
   money: number;
   purchasedCards: any[];
+  travelCard?: any;
 }
 
 function ResultScreen({ gameId, roomId, playerId, onRestart, onBackToLobby }: Props) {
@@ -198,51 +199,101 @@ function ResultScreen({ gameId, roomId, playerId, onRestart, onBackToLobby }: Pr
         </div>
 
         {myResult && (
-          <div className="score-breakdown">
-            <h3>내 점수 상세</h3>
-            <div className="breakdown-grid">
-              <div className="breakdown-item">
-                <p className="breakdown-label">🍽️ 맛</p>
-                <p className="breakdown-value">
-                  {myResult.breakdown.taste.base} × {myResult.breakdown.taste.multiplier} = {myResult.breakdown.taste.score}
-                </p>
+          <>
+            {/* 여행지 카드 정보 */}
+            {myResult.travelCard && (
+              <div className="travel-card-result">
+                <h3>🎯 내 여행지</h3>
+                <div className="travel-card-info">
+                  <div className="travel-card-name-result">{myResult.travelCard.name}</div>
+                  <div className="travel-multipliers">
+                    <div className="multiplier-item">
+                      <span>🍽️ 맛</span>
+                      <span className={`multiplier-badge mult-${myResult.breakdown.taste.multiplier}`}>
+                        ×{myResult.breakdown.taste.multiplier}
+                      </span>
+                    </div>
+                    <div className="multiplier-item">
+                      <span>🏛️ 역사</span>
+                      <span className={`multiplier-badge mult-${myResult.breakdown.history.multiplier}`}>
+                        ×{myResult.breakdown.history.multiplier}
+                      </span>
+                    </div>
+                    <div className="multiplier-item">
+                      <span>🌲 자연</span>
+                      <span className={`multiplier-badge mult-${myResult.breakdown.nature.multiplier}`}>
+                        ×{myResult.breakdown.nature.multiplier}
+                      </span>
+                    </div>
+                    <div className="multiplier-item">
+                      <span>🎭 문화</span>
+                      <span className={`multiplier-badge mult-${myResult.breakdown.culture.multiplier}`}>
+                        ×{myResult.breakdown.culture.multiplier}
+                      </span>
+                    </div>
+                    <div className="multiplier-item">
+                      <span>⚽ 레저</span>
+                      <span className={`multiplier-badge mult-${myResult.breakdown.leisure.multiplier}`}>
+                        ×{myResult.breakdown.leisure.multiplier}
+                      </span>
+                    </div>
+                    <div className="multiplier-item">
+                      <span>🏊 물놀이</span>
+                      <span className={`multiplier-badge mult-${myResult.breakdown.water.multiplier}`}>
+                        ×{myResult.breakdown.water.multiplier}
+                      </span>
+                    </div>
+                  </div>
+                </div>
               </div>
-              <div className="breakdown-item">
-                <p className="breakdown-label">🏛️ 역사</p>
-                <p className="breakdown-value">
-                  {myResult.breakdown.history.base} × {myResult.breakdown.history.multiplier} = {myResult.breakdown.history.score}
-                </p>
-              </div>
-              <div className="breakdown-item">
-                <p className="breakdown-label">🌲 자연</p>
-                <p className="breakdown-value">
-                  {myResult.breakdown.nature.base} × {myResult.breakdown.nature.multiplier} = {myResult.breakdown.nature.score}
-                </p>
-              </div>
-              <div className="breakdown-item">
-                <p className="breakdown-label">🎭 문화</p>
-                <p className="breakdown-value">
-                  {myResult.breakdown.culture.base} × {myResult.breakdown.culture.multiplier} = {myResult.breakdown.culture.score}
-                </p>
-              </div>
-              <div className="breakdown-item">
-                <p className="breakdown-label">⚽ 레저</p>
-                <p className="breakdown-value">
-                  {myResult.breakdown.leisure.base} × {myResult.breakdown.leisure.multiplier} = {myResult.breakdown.leisure.score}
-                </p>
-              </div>
-              <div className="breakdown-item">
-                <p className="breakdown-label">🏊 물놀이</p>
-                <p className="breakdown-value">
-                  {myResult.breakdown.water.base} × {myResult.breakdown.water.multiplier} = {myResult.breakdown.water.score}
-                </p>
-              </div>
-              <div className="breakdown-item">
-                <p className="breakdown-label">💭 추억</p>
-                <p className="breakdown-value">{myResult.breakdown.memory.score}</p>
+            )}
+            
+            <div className="score-breakdown">
+              <h3>내 점수 상세</h3>
+              <div className="breakdown-grid">
+                <div className="breakdown-item">
+                  <p className="breakdown-label">🍽️ 맛</p>
+                  <p className="breakdown-value">
+                    {myResult.breakdown.taste.base} × {myResult.breakdown.taste.multiplier} = {myResult.breakdown.taste.score}
+                  </p>
+                </div>
+                <div className="breakdown-item">
+                  <p className="breakdown-label">🏛️ 역사</p>
+                  <p className="breakdown-value">
+                    {myResult.breakdown.history.base} × {myResult.breakdown.history.multiplier} = {myResult.breakdown.history.score}
+                  </p>
+                </div>
+                <div className="breakdown-item">
+                  <p className="breakdown-label">🌲 자연</p>
+                  <p className="breakdown-value">
+                    {myResult.breakdown.nature.base} × {myResult.breakdown.nature.multiplier} = {myResult.breakdown.nature.score}
+                  </p>
+                </div>
+                <div className="breakdown-item">
+                  <p className="breakdown-label">🎭 문화</p>
+                  <p className="breakdown-value">
+                    {myResult.breakdown.culture.base} × {myResult.breakdown.culture.multiplier} = {myResult.breakdown.culture.score}
+                  </p>
+                </div>
+                <div className="breakdown-item">
+                  <p className="breakdown-label">⚽ 레저</p>
+                  <p className="breakdown-value">
+                    {myResult.breakdown.leisure.base} × {myResult.breakdown.leisure.multiplier} = {myResult.breakdown.leisure.score}
+                  </p>
+                </div>
+                <div className="breakdown-item">
+                  <p className="breakdown-label">🏊 물놀이</p>
+                  <p className="breakdown-value">
+                    {myResult.breakdown.water.base} × {myResult.breakdown.water.multiplier} = {myResult.breakdown.water.score}
+                  </p>
+                </div>
+                <div className="breakdown-item">
+                  <p className="breakdown-label">💭 추억</p>
+                  <p className="breakdown-value">{myResult.breakdown.memory.score}</p>
+                </div>
               </div>
             </div>
-          </div>
+          </>
         )}
 
         <div className="result-actions">

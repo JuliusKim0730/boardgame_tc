@@ -173,6 +173,28 @@ router.get('/games/:gameId/joint-plan', async (req, res) => {
   }
 });
 
+// 공동 계획 카드 목록 조회
+router.get('/cards/joint-plan', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, code, name, cost, effects, metadata 
+       FROM cards 
+       WHERE type = 'joint' 
+       ORDER BY code`
+    );
+    
+    const cards = result.rows.map(card => ({
+      ...card,
+      effects: typeof card.effects === 'string' ? JSON.parse(card.effects) : card.effects,
+      metadata: typeof card.metadata === 'string' ? JSON.parse(card.metadata) : card.metadata
+    }));
+    
+    res.json(cards);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
 // 최종 구매
 router.post('/games/:gameId/final-purchase', async (req, res) => {
   try {
@@ -313,6 +335,57 @@ router.post('/games/:gameId/use-resolve-token', async (req, res) => {
     const { playerId, actionType } = req.body;
     const result = await turnService.useResolveToken(gameId, playerId, actionType);
     res.json(result);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// 추가 행동 수행 (찬스 카드 효과)
+router.post('/games/:gameId/extra-action', async (req, res) => {
+  try {
+    const { gameId } = req.params;
+    const { playerId, actionType, skipMove } = req.body;
+    
+    // skipMove가 true면 이동 없이 행동만 수행
+    const result = await turnService.performAction(gameId, playerId, actionType);
+    res.json(result);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// 공동 목표 카드 선택 (CH17)
+router.post('/games/:gameId/select-joint-plan', async (req, res) => {
+  try {
+    const { gameId } = req.params;
+    const { cardId } = req.body;
+    
+    await pool.query(
+      'UPDATE games SET joint_plan_card_id = $1 WHERE id = $2',
+      [cardId, gameId]
+    );
+    
+    // 선택한 카드 정보 조회
+    const cardResult = await pool.query(
+      'SELECT * FROM cards WHERE id = $1',
+      [cardId]
+    );
+    
+    // 소켓으로 알림
+    if (io) {
+      const roomResult = await pool.query(
+        'SELECT room_id FROM games WHERE id = $1',
+        [gameId]
+      );
+      const roomId = roomResult.rows[0].room_id;
+      
+      io.to(roomId).emit('joint-plan-selected', {
+        gameId,
+        card: cardResult.rows[0]
+      });
+    }
+    
+    res.json({ success: true, card: cardResult.rows[0] });
   } catch (error: any) {
     res.status(400).json({ error: error.message });
   }

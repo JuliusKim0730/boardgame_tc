@@ -9,14 +9,21 @@ interface Card {
   effects: any;
 }
 
+interface TravelCard {
+  id: string;
+  name: string;
+  metadata: any;
+}
+
 interface Props {
   isOpen: boolean;
   handCards: Card[];
   currentMoney: number;
+  travelCard?: TravelCard;
   onPurchase: (cardIds: string[]) => void;
 }
 
-function FinalPurchaseModal({ isOpen, handCards, currentMoney, onPurchase }: Props) {
+function FinalPurchaseModal({ isOpen, handCards, currentMoney, travelCard, onPurchase }: Props) {
   const [selectedCards, setSelectedCards] = useState<string[]>([]);
   const [totalCost, setTotalCost] = useState(0);
 
@@ -56,6 +63,17 @@ function FinalPurchaseModal({ isOpen, handCards, currentMoney, onPurchase }: Pro
     memory: '추억'
   };
 
+  // 여행지 카드의 가중치 정보 추출
+  const getMultipliers = () => {
+    if (!travelCard?.metadata) return {};
+    const metadata = typeof travelCard.metadata === 'string' 
+      ? JSON.parse(travelCard.metadata) 
+      : travelCard.metadata;
+    return metadata.multipliers || {};
+  };
+
+  const multipliers = getMultipliers();
+
   return (
     <div className="final-purchase-modal-overlay">
       <div className="final-purchase-modal">
@@ -63,6 +81,23 @@ function FinalPurchaseModal({ isOpen, handCards, currentMoney, onPurchase }: Pro
         <p className="modal-description">
           손패에서 구매할 카드를 선택하세요. 구매한 카드의 특성 점수가 최종 점수에 반영됩니다.
         </p>
+
+        {/* 여행지 카드 정보 표시 */}
+        {travelCard && (
+          <div className="travel-card-info-purchase">
+            <div className="travel-card-header-purchase">
+              <span className="travel-icon">🎯</span>
+              <span className="travel-name">{travelCard.name}</span>
+            </div>
+            <div className="travel-multipliers-purchase">
+              {Object.entries(multipliers).map(([trait, mult]: [string, any]) => (
+                <span key={trait} className={`multiplier-tag mult-${mult}`}>
+                  {traitNames[trait] || trait} ×{mult}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="purchase-info">
           <div className="info-item">

@@ -215,23 +215,61 @@ export class TurnManager {
           [newDay, gameId]
         );
 
-        // Day 8 시작 시 결심 토큰 회복 (1-7일차 동안 미사용 시)
+        // Day 8 시작 시 결심 토큰 회복 (7일차 종료 후, 토큰이 0개인 경우)
         if (newDay === 8) {
           console.log('🔥 Day 8 시작 - 결심 토큰 회복 체크');
-          // 1-7일차 동안 결심 토큰 사용하지 않은 플레이어에게 토큰 1개 회복
-          await client.query(
-            `UPDATE player_states ps
-             SET resolve_token = LEAST(resolve_token + 1, 2)
-             WHERE game_id = $1
-             AND NOT EXISTS (
-               SELECT 1 FROM event_logs el
-               WHERE el.game_id = $1
-               AND el.event_type = 'resolve_token_used'
-               AND el.data->>'playerId' = ps.player_id::text
-               AND el.created_at < NOW()
-             )`,
+          
+          // 룸 ID 조회
+          const roomResult = await client.query(
+            'SELECT room_id FROM games WHERE id = $1',
             [gameId]
           );
+          const roomId = roomResult.rows[0].room_id;
+          
+          // Day 8 시작 알림
+          if (this.io) {
+            this.io.to(roomId).emit('day-8-started', {
+              message: '8일차가 시작되었습니다. 결심 토큰 회복을 확인합니다.'
+            });
+          }
+          
+          // 현재 토큰이 0개인 플레이어에게 1개 회복
+          const recoveryResult = await client.query(
+            `UPDATE player_states 
+             SET resolve_token = 1
+             WHERE game_id = $1 AND resolve_token = 0
+             RETURNING player_id`,
+            [gameId]
+          );
+          
+          // 회복된 플레이어 로그 기록
+          for (const row of recoveryResult.rows) {
+            await client.query(
+              'INSERT INTO event_logs (game_id, event_type, data) VALUES ($1, $2, $3)',
+              [gameId, 'resolve_token_recovered', JSON.stringify({ 
+                playerId: row.player_id, 
+                day: newDay,
+                from: 0,
+                to: 1
+              })]
+            );
+            
+            console.log(`✅ 플레이어 ${row.player_id} 결심 토큰 회복: 0 -> 1`);
+            
+            // 소켓 알림
+            if (this.io) {
+              this.io.to(roomId).emit('resolve-token-recovered', {
+                playerId: row.player_id,
+                newCount: 1
+              });
+            }
+          }
+          
+          if (recoveryResult.rows.length > 0) {
+            console.log(`✅ ${recoveryResult.rows.length}명의 플레이어 결심 토큰 회복 완료`);
+          } else {
+            console.log('ℹ️ 결심 토큰 회복 대상 없음 (모두 1개 이상 보유)');
+          }
         }
 
         // 턴 순서 재배치 (선플레이어 변경)

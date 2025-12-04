@@ -174,3 +174,73 @@
 .btn-secondary:hover {
   background: #e0e0e0;
 }
+
+/* 여행지 카드 결과 */
+.travel-card-result {
+  margin: 24px 0;
+  padding: 20px;
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+  border: 2px solid #f59e0b;
+  border-radius: 12px;
+}
+
+.travel-card-result h3 {
+  font-size: 18px;
+  margin: 0 0 16px 0;
+  color: #92400e;
+}
+
+.travel-card-info {
+  background: white;
+  padding: 16px;
+  border-radius: 8px;
+}
+
+.travel-card-name-result {
+  font-size: 20px;
+  font-weight: 700;
+  color: #92400e;
+  margin-bottom: 16px;
+  text-align: center;
+}
+
+.travel-multipliers {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 12px;
+}
+
+.multiplier-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  background: #f9fafb;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.multiplier-badge {
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.multiplier-badge.mult-3 {
+  background: #dcfce7;
+  color: #166534;
+  border: 2px solid #22c55e;
+}
+
+.multiplier-badge.mult-2 {
+  background: #dbeafe;
+  color: #1e40af;
+  border: 2px solid #3b82f6;
+}
+
+.multiplier-badge.mult-1 {
+  background: #f3f4f6;
+  color: #6b7280;
+  border: 2px solid #d1d5db;
+}

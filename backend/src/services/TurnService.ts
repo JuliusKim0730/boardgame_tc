@@ -36,7 +36,7 @@ export class TurnService {
     console.warn(`${fieldName}의 타입이 예상과 다릅니다:`, typeof data);
     return {};
   }
-  // 결심 토큰 회복 체크 (7일차 시작 시)
+  // 결심 토큰 회복 체크 (8일차 시작 시 - 7일차 종료 후)
   async checkResolveTokenRecovery(gameId: string): Promise<void> {
     const client = await pool.connect();
     try {
@@ -49,32 +49,37 @@ export class TurnService {
       );
       const currentDay = gameResult.rows[0].day;
       
-      if (currentDay === 7) {
-        // 1~6일차 동안 결심 토큰 사용 여부 확인
+      console.log(`🔥 결심 토큰 회복 체크: Day ${currentDay}`);
+      
+      // 8일차 시작 시 (7일차 종료 후)
+      if (currentDay === 8) {
         const playersResult = await client.query(
-          'SELECT id, player_id FROM player_states WHERE game_id = $1',
+          'SELECT id, player_id, resolve_token FROM player_states WHERE game_id = $1',
           [gameId]
         );
         
         for (const player of playersResult.rows) {
-          const usageResult = await client.query(
-            `SELECT COUNT(*) as count FROM event_logs 
-             WHERE game_id = $1 
-             AND event_type = 'resolve_token_used' 
-             AND data->>\'playerId\' = $2`,
-            [gameId, player.player_id]
-          );
-          
-          const usageCount = parseInt(usageResult.rows[0].count);
-          
-          // 1~6일차 동안 미사용 시 토큰 1개 회복 (최대 2개)
-          if (usageCount === 0) {
+          // 현재 토큰이 0개인 경우 1개로 회복
+          if (player.resolve_token === 0) {
             await client.query(
-              `UPDATE player_states 
-               SET resolve_token = LEAST(resolve_token + 1, 2) 
-               WHERE id = $1`,
+              'UPDATE player_states SET resolve_token = 1 WHERE id = $1',
               [player.id]
             );
+            
+            console.log(`✅ 플레이어 ${player.player_id} 결심 토큰 회복: 0 -> 1`);
+            
+            // 회복 로그 기록
+            await client.query(
+              'INSERT INTO event_logs (game_id, event_type, data) VALUES ($1, $2, $3)',
+              [gameId, 'resolve_token_recovered', JSON.stringify({ 
+                playerId: player.player_id, 
+                day: currentDay,
+                from: 0,
+                to: 1
+              })]
+            );
+          } else {
+            console.log(`ℹ️ 플레이어 ${player.player_id} 결심 토큰: ${player.resolve_token}개 (회복 불필요)`);
           }
         }
       }

@@ -1,0 +1,137 @@
+.extra-action-modal {
+  background: white;
+  border-radius: 16px;
+  padding: 32px;
+  max-width: 600px;
+  width: 100%;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+.extra-action-modal .modal-header h2 {
+  margin: 0 0 24px 0;
+  text-align: center;
+  color: #1f2937;
+  font-size: 28px;
+}
+
+.extra-action-modal .modal-body {
+  margin-bottom: 24px;
+}
+
+.action-message {
+  text-align: center;
+  color: #6b7280;
+  margin-bottom: 32px;
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+.action-selection h3 {
+  font-size: 18px;
+  margin: 0 0 16px 0;
+  color: #1f2937;
+  text-align: center;
+}
+
+.action-buttons {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 12px;
+}
+
+.action-button {
+  background: white;
+  border: 3px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 20px 16px;
+  cursor: pointer;
+  transition: all 0.3s;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.action-button:hover {
+  border-color: #667eea;
+  transform: translateY(-4px);
+  box-shadow: 0 8px 16px rgba(102, 126, 234, 0.2);
+}
+
+.action-button.selected {
+  border-color: #667eea;
+  background: linear-gradient(135deg, #f8f9ff 0%, #f3f4ff 100%);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.action-number {
+  font-size: 32px;
+  font-weight: 700;
+  color: #667eea;
+}
+
+.action-button.selected .action-number {
+  color: #5568d3;
+}
+
+.action-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #6b7280;
+  text-align: center;
+}
+
+.action-button.selected .action-name {
+  color: #1f2937;
+}
+
+.extra-action-modal .modal-footer {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+}
+
+.extra-action-modal .btn-cancel,
+.extra-action-modal .btn-confirm {
+  padding: 14px 32px;
+  font-size: 16px;
+  font-weight: 600;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.extra-action-modal .btn-cancel {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+.extra-action-modal .btn-cancel:hover {
+  background: #e5e7eb;
+  transform: translateY(-2px);
+}
+
+.extra-action-modal .btn-confirm {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.extra-action-modal .btn-confirm:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(102, 126, 234, 0.4);
+}
+
+.extra-action-modal .btn-confirm:disabled {
+  background: #e5e7eb;
+  color: #9ca3af;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+@media (max-width: 768px) {
+  .action-buttons {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}

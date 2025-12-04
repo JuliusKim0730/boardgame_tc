@@ -103,13 +103,38 @@ export class ChanceService {
     const moneyChange = effects.money || 0;
     console.log(`💰 돈 카드 효과 적용: ${card.code} - ${card.name}, 금액: ${moneyChange}TC`);
     
-    await client.query(
-      `UPDATE player_states SET money = money + $1 
-       WHERE game_id = $2 AND player_id = $3`,
-      [moneyChange, gameId, playerId]
+    // 플레이어 상태 ID 조회
+    const stateResult = await client.query(
+      'SELECT id FROM player_states WHERE game_id = $1 AND player_id = $2',
+      [gameId, playerId]
     );
+    
+    if (stateResult.rows.length === 0) {
+      throw new Error('플레이어를 찾을 수 없습니다');
+    }
+    
+    const playerStateId = stateResult.rows[0].id;
+    
+    // 돈 업데이트
+    await client.query(
+      'UPDATE player_states SET money = money + $1 WHERE id = $2',
+      [moneyChange, playerStateId]
+    );
+    
+    // 업데이트 후 금액 확인
+    const verifyResult = await client.query(
+      'SELECT money FROM player_states WHERE id = $1',
+      [playerStateId]
+    );
+    
+    console.log(`✅ 돈 업데이트 완료: ${moneyChange > 0 ? '+' : ''}${moneyChange}TC, 현재 잔액: ${verifyResult.rows[0].money}TC`);
 
-    return { type: 'money', amount: moneyChange, cardName: card.name };
+    return { 
+      type: 'money', 
+      amount: moneyChange, 
+      cardName: card.name,
+      message: `${card.name}: ${moneyChange > 0 ? '+' : ''}${moneyChange}TC`
+    };
   }
 
   // 상호작용 카드 처리
@@ -320,11 +345,27 @@ export class ChanceService {
     switch (action) {
       case 'catchup_plan':
         // CH14: 계획 최저 플레이어에게 드로우
-        return await this.drawPlanForLowest(client, gameId);
+        const catchupResult = await this.drawPlanForLowest(client, gameId);
+        return {
+          type: 'draw',
+          action: 'catchup_plan',
+          cardId: (catchupResult as any).cardId,
+          message: (catchupResult as any).cardId 
+            ? `계획 카드가 가장 적은 플레이어에게 카드를 지급했습니다!`
+            : '계획 카드를 지급할 수 없습니다'
+        };
       
       case 'draw_plan':
         // CH15: 계획 1장 드로우
-        return await this.drawPlan(client, gameId, playerId);
+        const drawResult = await this.drawPlan(client, gameId, playerId);
+        return {
+          type: 'draw',
+          action: 'draw_plan',
+          cardId: (drawResult as any).cardId,
+          message: (drawResult as any).cardId 
+            ? `계획 카드 1장을 획득했습니다!`
+            : '더 이상 뽑을 카드가 없습니다'
+        };
       
       default:
         return { type: 'draw', action };
@@ -552,17 +593,48 @@ export class ChanceService {
 
   // CH20: 공동 목표 지원
   private async handleJointPlanSupport(client: any, gameId: string, playerId: string) {
-    // 공동 목표 기여 테이블에 3,000TC 추가
-    await client.query(
-      'INSERT INTO joint_plan_contributions (game_id, player_state_id, amount) VALUES ($1, (SELECT id FROM player_states WHERE game_id = $1 AND player_id = $2), 3000)',
+    // 플레이어 상태 ID 조회
+    const stateResult = await client.query(
+      'SELECT id, money FROM player_states WHERE game_id = $1 AND player_id = $2',
       [gameId, playerId]
     );
+    
+    if (stateResult.rows.length === 0) {
+      throw new Error('플레이어를 찾을 수 없습니다');
+    }
+    
+    const playerStateId = stateResult.rows[0].id;
+    const currentMoney = stateResult.rows[0].money;
+    
+    // 돈이 부족한 경우 체크
+    if (currentMoney < 3000) {
+      return {
+        type: 'special',
+        action: 'joint_plan_support',
+        amount: 0,
+        message: '공동 목표 지원에 필요한 돈이 부족합니다 (3,000TC 필요)'
+      };
+    }
+    
+    // 플레이어 돈 차감
+    await client.query(
+      'UPDATE player_states SET money = money - 3000 WHERE id = $1',
+      [playerStateId]
+    );
+    
+    // 공동 목표 기여 테이블에 3,000TC 추가
+    await client.query(
+      'INSERT INTO joint_plan_contributions (game_id, player_state_id, amount) VALUES ($1, $2, 3000)',
+      [gameId, playerStateId]
+    );
+    
+    console.log(`✅ 공동 목표 지원: playerId=${playerId}, 3,000TC 기여`);
 
     return {
       type: 'special',
       action: 'joint_plan_support',
       amount: 3000,
-      message: '공동 목표에 3,000TC를 기여했습니다!'
+      message: '공동 목표에 3,000TC를 기여했습니다! (잔액에서 차감됨)'
     };
   }
 

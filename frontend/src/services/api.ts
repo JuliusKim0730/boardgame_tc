@@ -119,4 +119,19 @@ export const api = {
   // 이벤트 로그
   getEventLogs: (gameId: string) =>
     axios.get(`${API_BASE}/games/${gameId}/logs`),
+
+  // 찬스 카드 특수 효과
+  extraAction: (gameId: string, playerId: string, actionType: number, skipMove: boolean = true) =>
+    axios.post(`${API_BASE}/games/${gameId}/extra-action`, { playerId, actionType, skipMove }),
+
+  selectJointPlan: (gameId: string, cardId: string) =>
+    axios.post(`${API_BASE}/games/${gameId}/select-joint-plan`, { cardId }),
+
+  // 공동 계획 카드 목록 조회
+  getJointPlanCards: () =>
+    axios.get(`${API_BASE}/cards/joint-plan`),
+
+  // Axios 인스턴스 직접 노출 (커스텀 요청용)
+  post: (url: string, data?: any) => axios.post(`${API_BASE}${url}`, data),
+  get: (url: string) => axios.get(`${API_BASE}${url}`),
 };

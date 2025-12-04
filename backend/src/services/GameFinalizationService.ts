@@ -164,6 +164,7 @@ export class GameFinalizationService {
     money: number;
     memoryScore: number;
     purchasedCards: any[];
+    travelCard: any;
     rank: number;
   }>> {
     const client = await pool.connect();
@@ -178,7 +179,7 @@ export class GameFinalizationService {
         console.log('⚠️ 이미 점수 계산이 완료된 게임입니다');
         // 기존 결과 반환
         const existingResults = await client.query(
-          `SELECT gr.*, ps.player_id 
+          `SELECT gr.*, ps.player_id, ps.travel_card_id
            FROM game_results gr
            JOIN player_states ps ON gr.player_state_id = ps.id
            WHERE ps.game_id = $1
@@ -186,15 +187,31 @@ export class GameFinalizationService {
           [gameId]
         );
         
-        return existingResults.rows.map((row, index) => ({
-          playerId: row.player_id,
-          totalScore: row.total_score,
-          breakdown: row.breakdown,
-          money: 0,
-          memoryScore: 0,
-          purchasedCards: [],
-          rank: index + 1
-        }));
+        const results = [];
+        for (const row of existingResults.rows) {
+          // 여행지 카드 조회
+          let travelCard = null;
+          if (row.travel_card_id) {
+            const cardResult = await client.query(
+              'SELECT * FROM cards WHERE id = $1',
+              [row.travel_card_id]
+            );
+            travelCard = cardResult.rows[0] || null;
+          }
+          
+          results.push({
+            playerId: row.player_id,
+            totalScore: row.total_score,
+            breakdown: row.breakdown,
+            money: 0,
+            memoryScore: 0,
+            purchasedCards: [],
+            travelCard,
+            rank: results.length + 1
+          });
+        }
+        
+        return results;
       }
       
       console.log('📊 최종 점수 계산 시작...');
@@ -232,6 +249,7 @@ export class GameFinalizationService {
         money: number;
         memoryScore: number;
         purchasedCards: any[];
+        travelCard: any;
         rank: number;
       }> = [];
 
@@ -274,6 +292,16 @@ export class GameFinalizationService {
           [playerState.id]
         );
 
+        // 여행지 카드 조회
+        let travelCard = null;
+        if (playerState.travel_card_id) {
+          const travelCardResult = await client.query(
+            'SELECT * FROM cards WHERE id = $1',
+            [playerState.travel_card_id]
+          );
+          travelCard = travelCardResult.rows[0] || null;
+        }
+
         results.push({
           playerId: playerState.player_id,
           totalScore,
@@ -281,6 +309,7 @@ export class GameFinalizationService {
           money: playerState.money,
           memoryScore,
           purchasedCards: purchasedResult.rows,
+          travelCard,
           rank: 0 // 임시값, 아래에서 설정
         });
       }
