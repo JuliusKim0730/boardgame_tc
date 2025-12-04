@@ -6,10 +6,12 @@ export const pool = new Pool({
   database: process.env.DB_NAME || 'postgres',
   user: process.env.DB_USER || 'postgres',
   password: process.env.DB_PASSWORD || 'postgres',
-  max: 5,  // 연결 수 더 감소 (Supabase 무료 티어 제한)
-  min: 1,  // 최소 연결 유지
-  idleTimeoutMillis: 30000,  // 유휴 연결 30초 후 해제
-  connectionTimeoutMillis: 10000,  // 연결 타임아웃 10초
+  max: 10,  // 연결 수 증가 (동시 AI 턴 처리)
+  min: 2,  // 최소 연결 유지
+  idleTimeoutMillis: 120000,  // 유휴 연결 120초 후 해제 (AI 턴 고려)
+  connectionTimeoutMillis: 20000,  // 연결 타임아웃 20초
+  statement_timeout: 60000,  // 쿼리 실행 타임아웃 60초 (AI 턴 충분한 시간)
+  query_timeout: 60000,  // 쿼리 타임아웃 60초
   ssl: process.env.DB_HOST?.includes('supabase.com') 
     ? { rejectUnauthorized: false } 
     : undefined,

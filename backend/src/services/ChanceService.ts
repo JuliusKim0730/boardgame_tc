@@ -42,7 +42,19 @@ export class ChanceService {
       }
 
       const card = cardResult.rows[0];
-      const metadata = card.metadata || {};
+      
+      // metadata가 문자열이면 파싱
+      let metadata = card.metadata || {};
+      if (typeof metadata === 'string') {
+        try {
+          metadata = JSON.parse(metadata);
+        } catch (e) {
+          console.error('metadata 파싱 실패:', metadata);
+          metadata = {};
+        }
+      }
+      
+      console.log(`🎴 찬스 카드 실행: ${card.code} - ${card.name}, 타입: ${metadata.type}`);
 
       // 2인 전용 금지 카드 체크
       const playerCount = await this.getPlayerCount(gameId);
@@ -77,7 +89,19 @@ export class ChanceService {
 
   // 돈 카드 처리
   private async handleMoneyCard(client: any, gameId: string, playerId: string, card: any) {
-    const moneyChange = card.effects.money || 0;
+    // effects가 문자열이면 파싱
+    let effects = card.effects;
+    if (typeof effects === 'string') {
+      try {
+        effects = JSON.parse(effects);
+      } catch (e) {
+        console.error('effects 파싱 실패:', effects);
+        effects = {};
+      }
+    }
+    
+    const moneyChange = effects.money || 0;
+    console.log(`💰 돈 카드 효과 적용: ${card.code} - ${card.name}, 금액: ${moneyChange}TC`);
     
     await client.query(
       `UPDATE player_states SET money = money + $1 
@@ -85,7 +109,7 @@ export class ChanceService {
       [moneyChange, gameId, playerId]
     );
 
-    return { type: 'money', amount: moneyChange };
+    return { type: 'money', amount: moneyChange, cardName: card.name };
   }
 
   // 상호작용 카드 처리

@@ -1,12 +1,20 @@
 import './GameBoard.css';
 
+interface PlayerPosition {
+  playerId: string;
+  nickname: string;
+  position: number;
+  color: string;
+}
+
 interface Props {
   currentPosition: number;
   onPositionClick: (position: number) => void;
   disabled: boolean;
+  allPlayers?: PlayerPosition[]; // 모든 플레이어 위치 정보
 }
 
-function GameBoard({ currentPosition, onPositionClick, disabled }: Props) {
+function GameBoard({ currentPosition, onPositionClick, disabled, allPlayers = [] }: Props) {
   const positions = [
     { id: 1, name: '무료 계획', color: '#4CAF50' },
     { id: 2, name: '조사하기', color: '#2196F3' },
@@ -62,6 +70,9 @@ function GameBoard({ currentPosition, onPositionClick, disabled }: Props) {
           const isCurrent = pos.id === currentPosition;
           const isAdjacent = adjacent.includes(pos.id);
           const canClick = !disabled && isAdjacent;
+          
+          // 이 위치에 있는 플레이어들
+          const playersAtPosition = allPlayers.filter(p => p.position === pos.id);
 
           return (
             <g key={pos.id}>
@@ -131,6 +142,35 @@ function GameBoard({ currentPosition, onPositionClick, disabled }: Props) {
               >
                 {pos.name}
               </text>
+              
+              {/* 플레이어 위치 표시 */}
+              {playersAtPosition.map((player, index) => {
+                const offsetY = 60 + (index * 25); // 여러 플레이어가 있을 때 세로로 배치
+                return (
+                  <g key={player.playerId}>
+                    <rect
+                      x={coords.x - 40}
+                      y={coords.y + offsetY - 15}
+                      width="80"
+                      height="20"
+                      rx="10"
+                      fill={player.color}
+                      opacity="0.9"
+                    />
+                    <text
+                      x={coords.x}
+                      y={coords.y + offsetY}
+                      textAnchor="middle"
+                      fontSize="11"
+                      fontWeight="bold"
+                      fill="#fff"
+                      pointerEvents="none"
+                    >
+                      {player.nickname}
+                    </text>
+                  </g>
+                );
+              })}
             </g>
           );
         })}

@@ -128,6 +128,16 @@ export function setupGameSocket(io: Server) {
       });
     });
 
+    // 게임 나가기 (명시적)
+    socket.on('exit-game', async (data: { gameId: string; playerId: string }) => {
+      console.log(`🚪 플레이어 ${data.playerId}가 게임 ${data.gameId}에서 나감`);
+      
+      // AI 스케줄러 중지
+      const { aiScheduler } = await import('../services/AIScheduler');
+      aiScheduler.stopGame(data.gameId);
+      console.log(`🛑 게임 ${data.gameId} AI 스케줄러 중지 (플레이어 나가기)`);
+    });
+
     socket.on('disconnect', () => {
       console.log('Client disconnected:', socket.id);
     });

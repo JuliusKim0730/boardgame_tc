@@ -22,8 +22,12 @@ export class AIPlayerService {
    * AI 턴 실행
    */
   async executeTurn(gameId: string, playerId: string): Promise<void> {
+    const startTime = Date.now(); // ⏱️ 시작 시간
+    console.log(`⏱️ AI 턴 시작: playerId=${playerId}`);
+    
     try {
       // 1. 게임 상태 조회 (읽기 전용)
+      const stateStartTime = Date.now();
       const client = await pool.connect();
       let gameState;
       try {
@@ -31,25 +35,34 @@ export class AIPlayerService {
       } finally {
         client.release();
       }
+      console.log(`  ⏱️ 상태 조회: ${Date.now() - stateStartTime}ms`);
       
       // 2. 이동 결정
+      const decideStartTime = Date.now();
       const targetPosition = await this.decideMove(gameState);
-      console.log(`🤖 AI 이동 결정: ${gameState.playerState.position} → ${targetPosition}`);
+      console.log(`🤖 AI 이동 결정: ${gameState.playerState.position} → ${targetPosition} (${Date.now() - decideStartTime}ms)`);
       
       // 3. 이동 실행 (짧은 트랜잭션)
+      const moveStartTime = Date.now();
       await this.moveWithTransaction(gameId, playerId, targetPosition);
+      console.log(`  ⏱️ 이동 실행: ${Date.now() - moveStartTime}ms`);
 
       // 4. 행동 결정 및 실행 (짧은 트랜잭션)
       const action = targetPosition;
+      const actionStartTime = Date.now();
       console.log(`🤖 AI 행동 결정: ${action}번 (위치 ${targetPosition})`);
       await this.performActionWithTransaction(gameId, playerId, action);
+      console.log(`  ⏱️ 행동 실행: ${Date.now() - actionStartTime}ms`);
 
       console.log(`✅ AI 행동 완료`);
       
       // WebSocket으로 상태 업데이트 알림
+      const broadcastStartTime = Date.now();
       await this.broadcastGameState(gameId);
+      console.log(`  ⏱️ 상태 브로드캐스트: ${Date.now() - broadcastStartTime}ms`);
 
       // 5. 결심 토큰 사용 결정
+      const tokenStartTime = Date.now();
       const shouldUseToken = await this.shouldUseResolveTokenNow(gameId, playerId);
       
       if (shouldUseToken) {
@@ -57,16 +70,53 @@ export class AIPlayerService {
         await this.useResolveToken(gameId, playerId);
         // 결심 토큰 사용 후 상태 업데이트 브로드캐스트
         await this.broadcastGameState(gameId);
+        console.log(`  ⏱️ 결심 토큰 사용: ${Date.now() - tokenStartTime}ms`);
       }
 
       // 6. 턴 종료
+      const endTurnStartTime = Date.now();
       console.log(`🤖 AI 턴 종료 중...`);
       const { turnManager } = await import('./TurnManager');
-      await turnManager.endTurn(gameId, playerId);
-      console.log(`✅ AI 턴 완료`);
+      const endResult = await turnManager.endTurn(gameId, playerId);
+      console.log(`  ⏱️ 턴 종료: ${Date.now() - endTurnStartTime}ms`);
+      
+      const totalTime = Date.now() - startTime;
+      console.log(`✅ AI 턴 완료 - 총 소요 시간: ${totalTime}ms (${(totalTime / 1000).toFixed(2)}초)`);
+      
+      // 다음 플레이어도 AI면 연속 실행 (중복 방지)
+      if (endResult.isAI && endResult.nextPlayerId && !endResult.isGameEnd) {
+        const { aiScheduler } = await import('./AIScheduler');
+        
+        // 이미 실행 중이면 스킵 (gameRoutes에서 이미 실행 중)
+        if (aiScheduler.isGameExecuting(gameId)) {
+          console.log(`⚠️ 다음 AI 턴 이미 실행 중, 연속 실행 스킵: ${endResult.nextPlayerId}`);
+        } else {
+          console.log(`🔄 다음 플레이어도 AI, 연속 실행: ${endResult.nextPlayerId}`);
+          // 잠시 대기 후 다음 AI 턴 실행
+          await this.delay(1500);
+          await this.executeTurn(gameId, endResult.nextPlayerId);
+        }
+      }
       
     } catch (error: any) {
+      const totalTime = Date.now() - startTime;
+      console.error(`❌ AI 턴 실패 - 소요 시간: ${totalTime}ms (${(totalTime / 1000).toFixed(2)}초)`);
+
       console.error('❌ AI 턴 실행 중 에러:', error);
+      
+      // 치명적 에러 시 게임 중지
+      const isCriticalError = 
+        error?.code === 'XX000' || 
+        error?.message?.includes('DbHandler exited') ||
+        error?.message?.includes('턴 카운트 오류') ||
+        error?.code === '57014' || // statement timeout
+        error?.message?.includes('Query read timeout');
+      
+      if (isCriticalError) {
+        console.error(`🛑 치명적 에러 발생, 게임 ${gameId} 중지`);
+        const { aiScheduler } = await import('./AIScheduler');
+        aiScheduler.stopGame(gameId);
+      }
       
       // 프론트엔드에 에러 알림
       if (this.io) {
@@ -84,6 +134,7 @@ export class AIPlayerService {
                 gameId,
                 playerId,
                 error: error.message || 'AI 턴 실행 중 오류가 발생했습니다',
+                isCritical: isCriticalError,
                 timestamp: new Date()
               });
               console.log(`📡 AI 에러 알림 전송: ${roomId}`);
@@ -98,6 +149,13 @@ export class AIPlayerService {
       
       throw error;
     }
+  }
+
+  /**
+   * 지연 함수
+   */
+  private delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   /**
@@ -197,11 +255,16 @@ export class AIPlayerService {
     const currentPosition = playerState.position;
     const money = playerState.money;
 
-    // 인접 칸 계산 (1~6 순환)
-    const adjacentPositions = [
-      currentPosition === 1 ? 6 : currentPosition - 1,
-      currentPosition === 6 ? 1 : currentPosition + 1
-    ];
+    // 인접 칸 계산 (게임 규칙에 따른 연결)
+    const adjacency: { [key: number]: number[] } = {
+      1: [2, 3],      // 무료계획 → 조사하기, 집안일
+      2: [1, 4],      // 조사하기 → 무료계획, 여행지원
+      3: [1, 5],      // 집안일 → 무료계획, 찬스
+      4: [2, 5, 6],   // 여행지원 → 조사하기, 찬스, 자유행동
+      5: [3, 4, 6],   // 찬스 → 집안일, 여행지원, 자유행동
+      6: [4, 5]       // 자유행동 → 여행지원, 찬스
+    };
+    const adjacentPositions = adjacency[currentPosition] || [];
 
     // 전략 결정
     const mainTrait = this.getMainTrait(travelMultipliers); // x3 특성
@@ -367,11 +430,11 @@ export class AIPlayerService {
 
       console.log(`🔥 AI 결심 토큰 사용: ${selectedAction}번 행동 수행`);
 
-      // 추가 행동 수행
-      await this.performAction(client, gameId, playerId, selectedAction);
-
       await client.query('COMMIT');
       console.log(`✅ AI 결심 토큰 사용 완료`);
+      
+      // 추가 행동 수행 (별도 트랜잭션)
+      await this.performActionWithTransaction(gameId, playerId, selectedAction);
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
@@ -604,8 +667,8 @@ export class AIPlayerService {
     const client = await pool.connect();
     
     try {
-      // 타임아웃 설정 (5초)
-      await client.query('SET statement_timeout = 5000');
+      // 타임아웃 설정 (60초 - 충분한 시간)
+      await client.query('SET statement_timeout = 60000');
       await client.query('BEGIN');
       
       // 현재 위치 조회
@@ -678,8 +741,8 @@ export class AIPlayerService {
     const client = await pool.connect();
     
     try {
-      // 타임아웃 설정 (5초)
-      await client.query('SET statement_timeout = 5000');
+      // 타임아웃 설정 (60초 - 충분한 시간)
+      await client.query('SET statement_timeout = 60000');
       await client.query('BEGIN');
       
       const stateResult = await client.query(

@@ -36,7 +36,14 @@ interface GameState {
   status: string;
   travelTheme: string | null;
   jointPlanCardId: string | null;
+  players?: any[];
 }
+
+// 플레이어 색상 매핑
+const getPlayerColor = (index: number): string => {
+  const colors = ['#4CAF50', '#2196F3', '#FF9800', '#9C27B0', '#F44336', '#00BCD4'];
+  return colors[index % colors.length];
+};
 
 function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
   const [gameState, setGameState] = useState<GameState>({
@@ -65,6 +72,7 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
   const [finalPurchaseComplete, setFinalPurchaseComplete] = useState(false);
   const [chanceInteraction, setChanceInteraction] = useState<any>(null);
   const [showChanceInteraction, setShowChanceInteraction] = useState(false);
+  const [error, setError] = useState<string>('');
 
   // 게임 상태 로드
   const loadGameState = async (preserveActionState = false) => {
@@ -219,6 +227,26 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
       loadGameState();
     });
 
+    socket.on('move-completed', (data: any) => {
+      if (data.playerId !== playerId) {
+        // 다른 플레이어의 이동 알림
+        const player = gameState?.players?.find((p: any) => p.player_id === data.playerId);
+        const playerName = player?.name || '다른 플레이어';
+        const positionNames: { [key: number]: string } = {
+          1: '무료 계획',
+          2: '조사하기',
+          3: '집안일',
+          4: '여행 지원',
+          5: '찬스',
+          6: '자유 행동'
+        };
+        const toName = positionNames[data.to] || `${data.to}번`;
+        setMessage(`${playerName}님이 ${toName} 칸으로 이동했습니다`);
+      }
+      // 상태 새로고침
+      setTimeout(() => loadGameState(true), 300);
+    });
+
     socket.on('action-completed', (data: any) => {
       if (data.playerId === playerId) {
         setHasActed(true);
@@ -227,6 +255,32 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
         if (data.result?.card) {
           setDrawnCard(data.result.card);
           setShowCardDrawModal(true);
+        }
+      } else {
+        // 다른 플레이어의 행동 알림
+        const actionNames: { [key: number]: string } = {
+          1: '무료 계획',
+          2: '조사하기',
+          3: '집안일',
+          4: '여행 지원',
+          5: '찬스',
+          6: '자유 행동'
+        };
+        const actionName = actionNames[data.actionType] || '행동';
+        const playerName = data.playerName || '다른 플레이어';
+        
+        setMessage(`${playerName}님이 ${actionName}을 수행했습니다`);
+        
+        // 카드를 뽑은 경우 카드 정보도 표시 (모달로)
+        if (data.result?.card) {
+          setTimeout(() => {
+            setDrawnCard({
+              ...data.result.card,
+              drawnBy: playerName // 누가 뽑았는지 표시
+            });
+            setShowCardDrawModal(true);
+            setMessage(`${playerName}님이 "${data.result.card.name}" 카드를 획득했습니다`);
+          }, 800);
         }
       }
       // 행동 완료 후 상태 새로고침 (손패 업데이트 포함)
@@ -264,6 +318,15 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
       setMessage('게임이 종료되었습니다! 최종 구매를 진행하세요.');
       // Day 14 종료 시 최종 구매 모달 표시
       setShowFinalPurchase(true);
+    });
+
+    socket.on('final-results', (data: any) => {
+      console.log('📊 최종 결과 수신:', data);
+      setMessage('모든 플레이어의 최종 구매가 완료되었습니다!');
+      // 최종 구매 모달 닫기
+      setShowFinalPurchase(false);
+      // 결과 화면 표시
+      setShowResult(true);
     });
 
     socket.on('day-7-started', () => {
@@ -562,7 +625,11 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
         
 
         
-        <button className="btn-exit" onClick={onBackToLobby}>
+        <button className="btn-exit" onClick={() => {
+          // 게임 나가기 이벤트 발송
+          socketService.emit('exit-game', { gameId, playerId });
+          onBackToLobby();
+        }}>
           나가기
         </button>
       </div>
@@ -708,6 +775,12 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
               currentPosition={playerState?.position || 1}
               onPositionClick={handleMove}
               disabled={!isMyTurn || hasMoved}
+              allPlayers={allPlayers.map((p, index) => ({
+                playerId: p.player_id,
+                nickname: p.nickname || `플레이어 ${p.turn_order + 1}`,
+                position: p.position,
+                color: getPlayerColor(index)
+              }))}
             />
             <div className="board-hint">
               {isMyTurn && !hasMoved && '💡 인접한 칸(밝게 표시)을 클릭하여 이동하세요'}
@@ -716,21 +789,13 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
             </div>
           </div>
           
-          {/* 행동 선택 버튼 */}
-          {(() => {
-            console.log('=== 행동 버튼 렌더링 조건 ===');
-            console.log('isMyTurn:', isMyTurn);
-            console.log('hasMoved:', hasMoved);
-            console.log('hasActed:', hasActed);
-            console.log('playerState?.position:', playerState?.position);
-            console.log('조건 충족:', isMyTurn && hasMoved && !hasActed);
-            return null;
-          })()}
-          {isMyTurn && hasMoved && !hasActed && (
+          {/* 행동 선택 버튼 - 상시 노출 */}
+          {isMyTurn && !hasActed && (
             <div className="action-selection">
               <h3>행동 선택</h3>
               <p className="action-hint">
                 📍 현재 위치: {playerState?.position}번 칸 - {getActionName(playerState?.position || 1)}
+                {!hasMoved && <span style={{ color: '#ff9800', marginLeft: '10px' }}>⚠️ 먼저 이동하세요</span>}
               </p>
               <div className="action-buttons">
                 {playerState?.position === 6 ? (
@@ -744,6 +809,8 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
                         key={num}
                         className="btn-action"
                         onClick={() => handleAction(num)}
+                        disabled={!hasMoved}
+                        style={{ opacity: hasMoved ? 1 : 0.5, cursor: hasMoved ? 'pointer' : 'not-allowed' }}
                       >
                         {num}. {getActionName(num)}
                       </button>
@@ -754,6 +821,8 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
                   <button
                     className="btn-action btn-action-primary"
                     onClick={() => handleAction(playerState?.position || 1)}
+                    disabled={!hasMoved}
+                    style={{ opacity: hasMoved ? 1 : 0.5, cursor: hasMoved ? 'pointer' : 'not-allowed' }}
                   >
                     {playerState?.position}. {getActionName(playerState?.position || 1)}
                   </button>

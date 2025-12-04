@@ -18,6 +18,9 @@ export class GameFinalizationService {
       }
 
       const playerState = stateResult.rows[0];
+      
+      console.log(`💳 최종 구매: playerId=${playerId}, 구매 카드 수=${cardIds.length}`);
+      
       let totalCost = 0;
 
       // 구매할 카드들의 비용 계산
@@ -35,6 +38,8 @@ export class GameFinalizationService {
       if (playerState.money < totalCost) {
         throw new Error('돈이 부족합니다');
       }
+      
+      console.log(`💰 총 구매 비용: ${totalCost}TC (보유: ${playerState.money}TC)`);
 
       // 돈 차감
       await client.query(
@@ -163,6 +168,37 @@ export class GameFinalizationService {
   }>> {
     const client = await pool.connect();
     try {
+      // 중복 실행 방지: 이미 finished 상태인지 확인
+      const statusCheck = await client.query(
+        'SELECT status FROM games WHERE id = $1',
+        [gameId]
+      );
+      
+      if (statusCheck.rows[0]?.status === 'finished') {
+        console.log('⚠️ 이미 점수 계산이 완료된 게임입니다');
+        // 기존 결과 반환
+        const existingResults = await client.query(
+          `SELECT gr.*, ps.player_id 
+           FROM game_results gr
+           JOIN player_states ps ON gr.player_state_id = ps.id
+           WHERE ps.game_id = $1
+           ORDER BY gr.total_score DESC`,
+          [gameId]
+        );
+        
+        return existingResults.rows.map((row, index) => ({
+          playerId: row.player_id,
+          totalScore: row.total_score,
+          breakdown: row.breakdown,
+          money: 0,
+          memoryScore: 0,
+          purchasedCards: [],
+          rank: index + 1
+        }));
+      }
+      
+      console.log('📊 최종 점수 계산 시작...');
+      
       // 여행지 배수 조회
       const travelResult = await client.query(
         `SELECT c.metadata FROM games g

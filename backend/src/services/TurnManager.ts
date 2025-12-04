@@ -1,26 +1,19 @@
 import { pool } from '../db/pool';
+import { Server } from 'socket.io';
 
 export class TurnManager {
   private turnLocks: Map<string, string> = new Map(); // gameId -> playerId
+  private io: Server | null = null;
 
-  // 서버 시작 시 턴 락 복원
+  setSocketIO(io: Server) {
+    this.io = io;
+  }
+
+  // 서버 시작 시 턴 락 복원 (비활성화 - 오래된 게임 정리로 대체)
   async restoreTurnLocks(): Promise<void> {
-    try {
-      const result = await pool.query(
-        `SELECT id, current_turn_player_id 
-         FROM games 
-         WHERE status = 'running' AND current_turn_player_id IS NOT NULL`
-      );
-      
-      result.rows.forEach(row => {
-        this.turnLocks.set(row.id, row.current_turn_player_id);
-        console.log(`🔄 턴 락 복원: gameId=${row.id}, playerId=${row.current_turn_player_id}`);
-      });
-      
-      console.log(`✅ ${result.rows.length}개 게임의 턴 락 복원 완료`);
-    } catch (error) {
-      console.error('❌ 턴 락 복원 실패:', error);
-    }
+    console.log('ℹ️  턴 락 복원 비활성화 (새 게임만 처리)');
+    // 더 이상 턴 락을 복원하지 않음
+    // 서버 재시작 시 진행 중이던 게임은 자동으로 정리됨
   }
 
   // 턴 잠금 확인
@@ -41,46 +34,21 @@ export class TurnManager {
     console.log(`🔓 턴 락 해제: gameId=${gameId}`);
   }
 
-  // 턴 시작
+  // 턴 시작 (외부 호출용 - 새 트랜잭션)
   async startTurn(gameId: string, playerId: string): Promise<void> {
     const client = await pool.connect();
     try {
+      // 타임아웃 설정 (60초 - AI 턴 충분한 시간)
+      await client.query('SET statement_timeout = 60000');
       await client.query('BEGIN');
 
-      // 턴 레코드 생성
-      const gameResult = await client.query(
-        'SELECT day FROM games WHERE id = $1',
-        [gameId]
-      );
-      const currentDay = gameResult.rows[0].day;
-
-      const playerStateResult = await client.query(
-        'SELECT id FROM player_states WHERE game_id = $1 AND player_id = $2',
-        [gameId, playerId]
-      );
-      const playerStateId = playerStateResult.rows[0].id;
-
-      await client.query(
-        'INSERT INTO turns (game_id, day, player_state_id) VALUES ($1, $2, $3)',
-        [gameId, currentDay, playerStateId]
-      );
-
-      // 게임 상태 업데이트
-      await client.query(
-        'UPDATE games SET current_turn_player_id = $1 WHERE id = $2',
-        [playerId, gameId]
-      );
-
-      // forced_move 플래그 초기화 (턴 시작 시)
-      await client.query(
-        'UPDATE player_states SET forced_move = FALSE WHERE game_id = $1 AND player_id = $2',
-        [gameId, playerId]
-      );
-
-      // 턴 잠금
-      this.lockTurn(gameId, playerId);
+      await this.startTurnInternal(client, gameId, playerId);
 
       await client.query('COMMIT');
+      
+      // 커밋 후 턴 잠금 (트랜잭션 외부)
+      this.lockTurn(gameId, playerId);
+      
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
@@ -89,10 +57,56 @@ export class TurnManager {
     }
   }
 
+  // 턴 시작 (내부용 - 기존 트랜잭션 사용)
+  private async startTurnInternal(client: any, gameId: string, playerId: string): Promise<void> {
+    // 턴 레코드 생성
+    const gameResult = await client.query(
+      'SELECT day, room_id FROM games WHERE id = $1',
+      [gameId]
+    );
+    const currentDay = gameResult.rows[0].day;
+    const roomId = gameResult.rows[0].room_id;
+
+    const playerStateResult = await client.query(
+      'SELECT id FROM player_states WHERE game_id = $1 AND player_id = $2',
+      [gameId, playerId]
+    );
+    const playerStateId = playerStateResult.rows[0].id;
+
+    await client.query(
+      'INSERT INTO turns (game_id, day, player_state_id) VALUES ($1, $2, $3)',
+      [gameId, currentDay, playerStateId]
+    );
+
+    // 게임 상태 업데이트
+    await client.query(
+      'UPDATE games SET current_turn_player_id = $1 WHERE id = $2',
+      [playerId, gameId]
+    );
+
+    // forced_move 플래그 초기화 (턴 시작 시)
+    await client.query(
+      'UPDATE player_states SET forced_move = FALSE WHERE game_id = $1 AND player_id = $2',
+      [gameId, playerId]
+    );
+
+    // 소켓 이벤트 발송 (턴 시작 알림)
+    if (this.io && roomId) {
+      this.io.to(roomId).emit('turn-started', {
+        gameId,
+        playerId,
+        day: currentDay
+      });
+      console.log(`📡 턴 시작 알림 전송: playerId=${playerId}, day=${currentDay}`);
+    }
+  }
+
   // 턴 종료 및 다음 플레이어로 전환
-  async endTurn(gameId: string, playerId: string): Promise<{ nextPlayerId: string | null; isGameEnd: boolean }> {
+  async endTurn(gameId: string, playerId: string): Promise<{ nextPlayerId: string | null; isGameEnd: boolean; isAI: boolean }> {
     const client = await pool.connect();
     try {
+      // 타임아웃 설정 (60초)
+      await client.query('SET statement_timeout = 60000');
       await client.query('BEGIN');
 
       // 현재 턴 종료
@@ -137,6 +151,12 @@ export class TurnManager {
       const completedTurns = parseInt(turnsResult.rows[0].completed);
       
       console.log(`📊 Day ${currentDay} 턴 완료 현황: ${completedTurns}/${totalPlayers}`);
+      
+      // 중복 턴 방지: 이미 모든 플레이어가 턴을 마쳤으면 에러
+      if (completedTurns > totalPlayers) {
+        console.error(`❌ 턴 카운트 오류: ${completedTurns}/${totalPlayers} - 중복 턴 감지`);
+        throw new Error('턴 카운트 오류: 중복 턴이 감지되었습니다');
+      }
 
       // 모든 플레이어가 턴을 마쳤으면 다음 날로
       if (completedTurns >= totalPlayers) {
@@ -148,12 +168,45 @@ export class TurnManager {
         if (newDay > 14) {
           // 게임 종료
           console.log('🏁 14일차 완료 - 게임 종료');
+          
+          // 룸 ID 조회
+          const roomResult = await client.query(
+            'SELECT room_id FROM games WHERE id = $1',
+            [gameId]
+          );
+          const roomId = roomResult.rows[0]?.room_id;
+          
           await client.query(
             'UPDATE games SET status = $1, current_turn_player_id = NULL WHERE id = $2',
             ['finalizing', gameId]
           );
           await client.query('COMMIT');
-          return { nextPlayerId: null, isGameEnd: true };
+          
+          // AI 스케줄러 중지
+          const { aiScheduler } = await import('./AIScheduler');
+          aiScheduler.stopGame(gameId);
+          
+          // 게임 종료 이벤트 발송
+          if (this.io && roomId) {
+            this.io.to(roomId).emit('game-ended', {
+              gameId,
+              message: '14일차가 완료되었습니다! 최종 구매를 진행하세요.'
+            });
+            console.log(`📡 게임 종료 알림 전송: ${roomId}`);
+          }
+          
+          // AI 플레이어 최종 구매 자동 실행
+          setTimeout(async () => {
+            try {
+              console.log('🤖 AI 최종 구매 자동 실행 시작...');
+              await aiScheduler.executeAIFinalPurchases(gameId);
+              console.log('✅ AI 최종 구매 완료');
+            } catch (error) {
+              console.error('❌ AI 최종 구매 실패:', error);
+            }
+          }, 2000); // 2초 후 실행 (게임 종료 알림 후)
+          
+          return { nextPlayerId: null, isGameEnd: true, isAI: false };
         }
 
         // 다음 날 시작
@@ -197,35 +250,61 @@ export class TurnManager {
 
         // 새로운 선플레이어 (turn_order = 0)
         const nextPlayerResult = await client.query(
-          `SELECT player_id FROM player_states 
-           WHERE game_id = $1 AND turn_order = 0`,
+          `SELECT ps.player_id, p.is_ai 
+           FROM player_states ps
+           JOIN players p ON p.id = ps.player_id
+           WHERE ps.game_id = $1 AND ps.turn_order = 0`,
           [gameId]
         );
 
         if (nextPlayerResult.rows.length > 0) {
           const nextPlayerId = nextPlayerResult.rows[0].player_id;
-          await this.startTurn(gameId, nextPlayerId);
+          const isAI = nextPlayerResult.rows[0].is_ai;
+          
+          // 같은 트랜잭션 내에서 다음 턴 시작
+          await this.startTurnInternal(client, gameId, nextPlayerId);
           await client.query('COMMIT');
-          return { nextPlayerId, isGameEnd: false };
+          
+          // 커밋 후 턴 잠금
+          this.lockTurn(gameId, nextPlayerId);
+          
+          // 게임 상태 브로드캐스트 (Day 전환 시)
+          await this.broadcastGameState(gameId);
+          
+          console.log(`✅ 다음 턴 시작 (Day 전환): playerId=${nextPlayerId}, isAI=${isAI}`);
+          return { nextPlayerId, isGameEnd: false, isAI };
         }
       } else {
         // 같은 날, 다음 플레이어
         const nextPlayerResult = await client.query(
-          `SELECT player_id FROM player_states 
-           WHERE game_id = $1 AND turn_order = $2`,
+          `SELECT ps.player_id, p.is_ai 
+           FROM player_states ps
+           JOIN players p ON p.id = ps.player_id
+           WHERE ps.game_id = $1 AND ps.turn_order = $2`,
           [gameId, nextTurnOrder]
         );
 
         if (nextPlayerResult.rows.length > 0) {
           const nextPlayerId = nextPlayerResult.rows[0].player_id;
-          await this.startTurn(gameId, nextPlayerId);
+          const isAI = nextPlayerResult.rows[0].is_ai;
+          
+          // 같은 트랜잭션 내에서 다음 턴 시작
+          await this.startTurnInternal(client, gameId, nextPlayerId);
           await client.query('COMMIT');
-          return { nextPlayerId, isGameEnd: false };
+          
+          // 커밋 후 턴 잠금
+          this.lockTurn(gameId, nextPlayerId);
+          
+          // 게임 상태 브로드캐스트 (같은 날 턴 전환)
+          await this.broadcastGameState(gameId);
+          
+          console.log(`✅ 다음 턴 시작: playerId=${nextPlayerId}, isAI=${isAI}`);
+          return { nextPlayerId, isGameEnd: false, isAI };
         }
       }
 
       await client.query('COMMIT');
-      return { nextPlayerId: null, isGameEnd: false };
+      return { nextPlayerId: null, isGameEnd: false, isAI: false };
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
@@ -238,6 +317,48 @@ export class TurnManager {
   validateTurn(gameId: string, playerId: string): void {
     if (!this.isCurrentTurn(gameId, playerId)) {
       throw new Error('현재 당신의 턴이 아닙니다');
+    }
+  }
+
+  // 게임 상태 브로드캐스트
+  private async broadcastGameState(gameId: string): Promise<void> {
+    if (!this.io) return;
+
+    const client = await pool.connect();
+    try {
+      // 게임 정보 조회
+      const gameResult = await client.query(
+        'SELECT room_id, day, current_turn_player_id FROM games WHERE id = $1',
+        [gameId]
+      );
+      
+      if (gameResult.rows.length === 0) return;
+      
+      const { room_id, day, current_turn_player_id } = gameResult.rows[0];
+      
+      // 플레이어 상태 조회
+      const playersResult = await client.query(
+        `SELECT ps.*, u.username as name, u.is_ai 
+         FROM player_states ps
+         JOIN players p ON ps.player_id = p.id
+         JOIN users u ON p.user_id = u.id
+         WHERE ps.game_id = $1
+         ORDER BY ps.turn_order`,
+        [gameId]
+      );
+
+      this.io.to(room_id).emit('game-state-updated', {
+        gameId,
+        day,
+        currentTurnPlayerId: current_turn_player_id,
+        players: playersResult.rows
+      });
+      
+      console.log(`📡 게임 상태 업데이트 브로드캐스트: ${room_id}`);
+    } catch (error) {
+      console.error('게임 상태 브로드캐스트 실패:', error);
+    } finally {
+      client.release();
     }
   }
 }

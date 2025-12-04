@@ -61,6 +61,37 @@ router.post('/games/:gameId/end-turn', async (req, res) => {
         playerId: result.nextPlayerId,
         day: currentDay
       });
+      
+      // AI 플레이어면 즉시 턴 실행 (중복 실행 방지)
+      if (result.isAI && result.nextPlayerId) {
+        const nextPlayerId = result.nextPlayerId;
+        
+        // 스케줄러에 실행 중 표시 (중복 실행 방지)
+        const { aiScheduler } = await import('../services/AIScheduler');
+        
+        // 이미 실행 중이면 스킵
+        if (aiScheduler.isGameExecuting(gameId)) {
+          console.log(`⚠️ AI 턴 이미 실행 중, 스킵: gameId=${gameId}`);
+        } else {
+          console.log(`🤖 AI 턴 즉시 실행 예약: playerId=${nextPlayerId}`);
+          aiScheduler.markGameAsExecuting(gameId);
+          
+          // 비동기로 실행 (응답 지연 방지)
+          setImmediate(async () => {
+            try {
+              const { aiPlayerService } = await import('../services/AIPlayerService');
+              console.log(`🤖 AI 턴 즉시 실행 시작: playerId=${nextPlayerId}`);
+              await aiPlayerService.executeTurn(gameId, nextPlayerId);
+              console.log(`✅ AI 턴 즉시 실행 완료: playerId=${nextPlayerId}`);
+            } catch (error) {
+              console.error('❌ AI 턴 즉시 실행 실패:', error);
+            } finally {
+              // 실행 완료 표시 제거
+              aiScheduler.unmarkGameAsExecuting(gameId);
+            }
+          });
+        }
+      }
     }
     
     // 게임 종료 알림
@@ -72,6 +103,11 @@ router.post('/games/:gameId/end-turn', async (req, res) => {
       const roomId = roomResult.rows[0].room_id;
       
       io.to(roomId).emit('game-ended', { gameId });
+      
+      // AI 스케줄러 중지
+      const { aiScheduler } = await import('../services/AIScheduler');
+      aiScheduler.stopGame(gameId);
+      console.log(`🛑 게임 종료로 AI 스케줄러 중지: ${gameId}`);
     }
     
     res.json(result);
@@ -143,6 +179,59 @@ router.post('/games/:gameId/final-purchase', async (req, res) => {
     const { gameId } = req.params;
     const { playerId, cardIds } = req.body;
     await gameFinalizationService.finalPurchase(gameId, playerId, cardIds);
+    
+    // 모든 플레이어가 최종 구매를 완료했는지 확인
+    const { pool } = await import('../db/pool');
+    const client = await pool.connect();
+    try {
+      // 전체 플레이어 수
+      const totalPlayersResult = await client.query(
+        'SELECT COUNT(*) as count FROM player_states WHERE game_id = $1',
+        [gameId]
+      );
+      const totalPlayers = parseInt(totalPlayersResult.rows[0].count);
+      
+      // 최종 구매 완료한 플레이어 수 (purchased 테이블에 기록이 있거나 손패가 비어있음)
+      const completedResult = await client.query(
+        `SELECT COUNT(DISTINCT ps.player_id) as count
+         FROM player_states ps
+         WHERE ps.game_id = $1
+         AND (
+           EXISTS (SELECT 1 FROM purchased p WHERE p.player_state_id = ps.id)
+           OR NOT EXISTS (SELECT 1 FROM hands h WHERE h.player_state_id = ps.id)
+         )`,
+        [gameId]
+      );
+      const completedPlayers = parseInt(completedResult.rows[0].count);
+      
+      console.log(`📊 최종 구매 진행 상황: ${completedPlayers}/${totalPlayers}`);
+      
+      // 모든 플레이어가 완료했으면 자동으로 점수 계산
+      if (completedPlayers >= totalPlayers) {
+        console.log('✅ 모든 플레이어 최종 구매 완료 - 점수 계산 시작');
+        
+        // 점수 계산 실행
+        const results = await gameFinalizationService.calculateFinalScore(gameId);
+        
+        // 결과 브로드캐스트
+        const roomResult = await client.query(
+          'SELECT room_id FROM games WHERE id = $1',
+          [gameId]
+        );
+        const roomId = roomResult.rows[0]?.room_id;
+        
+        if (io && roomId) {
+          io.to(roomId).emit('final-results', {
+            gameId,
+            results
+          });
+          console.log(`📡 최종 결과 브로드캐스트: ${roomId}`);
+        }
+      }
+    } finally {
+      client.release();
+    }
+    
     res.json({ success: true });
   } catch (error: any) {
     res.status(400).json({ error: error.message });

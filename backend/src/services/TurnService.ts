@@ -155,6 +155,22 @@ export class TurnService {
       
       await client.query('COMMIT');
       console.log('이동 처리 완료');
+      
+      // 이동 완료 브로드캐스트
+      if (this.io) {
+        const roomResult = await pool.query(
+          'SELECT room_id FROM games WHERE id = $1',
+          [gameId]
+        );
+        if (roomResult.rows.length > 0) {
+          const roomId = roomResult.rows[0].room_id;
+          this.io.to(roomId).emit('move-completed', {
+            playerId,
+            from: currentPosition,
+            to: targetPosition
+          });
+        }
+      }
     } catch (error) {
       await client.query('ROLLBACK');
       console.error('이동 처리 중 에러:', error);
@@ -298,8 +314,19 @@ export class TurnService {
         );
         const roomId = roomResult.rows[0].room_id;
         
+        // 플레이어 이름 조회
+        const playerResult = await client.query(
+          `SELECT u.username 
+           FROM players p 
+           JOIN users u ON p.user_id = u.id 
+           WHERE p.id = $1`,
+          [playerId]
+        );
+        const playerName = playerResult.rows[0]?.username || '플레이어';
+        
         this.io.to(roomId).emit('action-completed', {
           playerId,
+          playerName,
           actionType,
           result
         });
@@ -404,7 +431,15 @@ export class TurnService {
     }
     
     const card = cardResult.rows[0];
-    console.log('카드 정보:', { id: card.id, name: card.name, type: card.type, code: card.code });
+    console.log('카드 정보 (전체):', { 
+      id: card.id, 
+      name: card.name, 
+      type: card.type, 
+      code: card.code,
+      cost: card.cost,
+      effects: card.effects,
+      metadata: card.metadata
+    });
     
     // 손패에 추가 (plan, freeplan만)
     if (['plan', 'freeplan'].includes(deckType)) {
@@ -571,10 +606,38 @@ export class TurnService {
     try {
       await client.query('BEGIN');
       
-      const result = await this.drawCard(client, gameId, playerId, 'chance');
+      // 플레이어 상태 ID 조회
+      const stateResult = await client.query(
+        'SELECT id FROM player_states WHERE game_id = $1 AND player_id = $2',
+        [gameId, playerId]
+      );
+      const playerStateId = stateResult.rows[0].id;
+      
+      const result = await this.drawCard(client, gameId, playerStateId, 'chance');
       
       await client.query('COMMIT');
-      return result;
+      
+      // 찬스 카드 효과 즉시 적용
+      const card = result.card;
+      const { chanceService } = await import('./ChanceService');
+      
+      try {
+        const effectResult = await chanceService.executeChance(gameId, playerId, card.code);
+        console.log(`✅ 찬스 카드 효과 적용: ${card.code} - ${card.name}`);
+        
+        return { 
+          card, 
+          effectApplied: true,
+          effectResult 
+        };
+      } catch (error: any) {
+        console.error(`❌ 찬스 카드 효과 적용 실패: ${card.code}`, error);
+        return { 
+          card, 
+          effectApplied: false,
+          error: error.message 
+        };
+      }
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;

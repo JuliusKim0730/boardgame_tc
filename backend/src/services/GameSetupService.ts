@@ -142,6 +142,8 @@ export class GameSetupService {
       
       await client.query('COMMIT');
       
+      await client.query('COMMIT');
+      
       // 턴 락 설정 (COMMIT 후에 설정)
       const { turnManager } = await import('./TurnManager');
       turnManager.lockTurn(gameId, firstPlayer.id);

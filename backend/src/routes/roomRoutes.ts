@@ -66,11 +66,15 @@ router.post('/rooms/:roomId/start', async (req, res) => {
     const client = await pool.connect();
     try {
       const gameResult = await client.query(
-        'SELECT current_turn_player_id FROM games WHERE id = $1',
+        `SELECT g.current_turn_player_id, p.is_ai
+         FROM games g
+         JOIN players p ON p.id = g.current_turn_player_id
+         WHERE g.id = $1`,
         [gameId]
       );
       
       const firstPlayerId = gameResult.rows[0].current_turn_player_id;
+      const isFirstPlayerAI = gameResult.rows[0].is_ai;
       
       // WebSocket으로 게임 시작 및 첫 턴 알림
       if (io) {
@@ -78,6 +82,27 @@ router.post('/rooms/:roomId/start', async (req, res) => {
         io.to(roomId).emit('turn-started', { 
           playerId: firstPlayerId,
           day: 1
+        });
+      }
+      
+      // 첫 플레이어가 AI인 경우 즉시 턴 실행
+      if (isFirstPlayerAI) {
+        console.log('🤖 첫 플레이어가 AI, 즉시 턴 실행 예약');
+        const { aiScheduler } = await import('../services/AIScheduler');
+        aiScheduler.markGameAsExecuting(gameId);
+        
+        // 비동기로 AI 턴 실행 (응답 지연 방지)
+        setImmediate(async () => {
+          try {
+            const { aiPlayerService } = await import('../services/AIPlayerService');
+            console.log('🤖 첫 AI 턴 실행 시작');
+            await aiPlayerService.executeTurn(gameId, firstPlayerId);
+            console.log('✅ 첫 AI 턴 실행 완료');
+          } catch (error) {
+            console.error('❌ 첫 AI 턴 실행 실패:', error);
+          } finally {
+            aiScheduler.unmarkGameAsExecuting(gameId);
+          }
         });
       }
     } finally {
