@@ -148,17 +148,17 @@ INSERT INTO cards (type, code, name, cost, effects, metadata) VALUES
 -- 새 카드 드로우 (4장)
 ('chance', 'CH14', '여행 이야기 듣기', 0, '{}', '{"type":"draw","action":"catchup_plan"}'),
 ('chance', 'CH15', '좋은 정보 발견', 0, '{}', '{"type":"draw","action":"draw_plan"}'),
-('chance', 'CH16', '버린만큼 뽑기', 0, '{}', '{"type":"draw","action":"discard_draw"}'),
-('chance', 'CH17', '여행 팜플렛', 0, '{}', '{"type":"draw","action":"replace_joint"}'),
+('chance', 'CH16', '버린만큼 뽑기', 0, '{}', '{"type":"special","action":"draw_discarded"}'),
+('chance', 'CH17', '여행 팜플렛', 0, '{}', '{"type":"special","action":"select_joint_plan"}'),
 -- 특수 행동 카드 (3장)
 ('chance', 'CH18', '체력이 넘친다!', 0, '{}', '{"type":"special","action":"extra_action"}'),
 ('chance', 'CH19', '반전의 기회', 0, '{}', '{"type":"special","action":"repeat_current"}'),
-('chance', 'CH20', '공동 목표 지원', 0, '{"money":3000}', '{"type":"special","action":"joint_contribution"}'),
+('chance', 'CH20', '공동 목표 지원', 0, '{}', '{"type":"special","action":"joint_plan_support"}'),
 -- 캐치업 카드 (5장)
-('chance', 'CH21', '엄마의 응원', 0, '{}', '{"type":"catchup","action":"money_catchup","amount":2000}'),
-('chance', 'CH22', '여행 선생님의 조언', 0, '{}', '{"type":"catchup","action":"plan_catchup"}'),
-('chance', 'CH23', '가족 사진 대작전', 0, '{}', '{"type":"catchup","action":"memory_catchup","amount":2}'),
-('chance', 'CH24', '엄마의 응원 메시지', 0, '{}', '{"type":"catchup","action":"memory_catchup","amount":2}'),
+('chance', 'CH21', '엄마의 응원', 0, '{}', '{"type":"catchup","action":"catchup_money"}'),
+('chance', 'CH22', '여행 선생님의 조언', 0, '{}', '{"type":"catchup","action":"catchup_plan"}'),
+('chance', 'CH23', '가족 사진 대작전', 0, '{}', '{"type":"catchup","action":"catchup_memory"}'),
+('chance', 'CH24', '엄마의 응원 메시지', 0, '{}', '{"type":"catchup","action":"catchup_memory"}'),
 ('chance', 'CH25', '동행 버디', 0, '{}', '{"type":"catchup","action":"buddy_action"}');
 
 -- ========================================

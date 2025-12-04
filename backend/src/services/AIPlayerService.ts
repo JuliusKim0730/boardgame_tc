@@ -864,3 +864,169 @@ export class AIPlayerService {
 }
 
 export const aiPlayerService = new AIPlayerService();
+
+  /**
+   * AI 최종 구매 결정
+   */
+  async decideFinalPurchase(gameId: string, playerId: string): Promise<string[]> {
+    const client = await pool.connect();
+    try {
+      // 플레이어 상태 조회
+      const stateResult = await client.query(
+        'SELECT id, money FROM player_states WHERE game_id = $1 AND player_id = $2',
+        [gameId, playerId]
+      );
+      const playerState = stateResult.rows[0];
+      
+      // 손패 카드 조회
+      const handsResult = await client.query(
+        `SELECT h.card_id, c.cost, c.effects
+         FROM hands h
+         JOIN cards c ON h.card_id = c.id
+         WHERE h.player_state_id = $1
+         ORDER BY c.cost DESC`,
+        [playerState.id]
+      );
+      
+      // 여행지 배수 조회
+      const travelResult = await client.query(
+        `SELECT c.metadata FROM games g
+         JOIN cards c ON c.code = g.travel_theme
+         WHERE g.id = $1`,
+        [gameId]
+      );
+      const multipliers = travelResult.rows[0]?.metadata?.multipliers || {};
+      
+      // 가치 계산 및 정렬
+      const cards = handsResult.rows.map((card: any) => {
+        const effects = typeof card.effects === 'string' ? JSON.parse(card.effects) : card.effects;
+        
+        // 특성별 점수 계산
+        let value = 0;
+        for (const [trait, points] of Object.entries(effects)) {
+          const multiplier = multipliers[trait] || 1;
+          value += (points as number) * multiplier;
+        }
+        
+        return {
+          cardId: card.card_id,
+          cost: card.cost,
+          value,
+          efficiency: value / Math.max(card.cost, 1) // 가성비
+        };
+      });
+      
+      // 가성비 순으로 정렬
+      cards.sort((a, b) => b.efficiency - a.efficiency);
+      
+      // 돈이 허용하는 한 구매
+      const purchaseList: string[] = [];
+      let remainingMoney = playerState.money;
+      
+      for (const card of cards) {
+        if (remainingMoney >= card.cost) {
+          purchaseList.push(card.cardId);
+          remainingMoney -= card.cost;
+        }
+      }
+      
+      console.log(`🤖 AI 최종 구매 결정: ${purchaseList.length}장 (총 ${playerState.money - remainingMoney}TC)`);
+      
+      return purchaseList;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * AI 특성 변환 결정
+   */
+  async decideTraitConversion(gameId: string, playerId: string): Promise<number> {
+    const client = await pool.connect();
+    try {
+      // 플레이어 상태 조회
+      const stateResult = await client.query(
+        'SELECT traits FROM player_states WHERE game_id = $1 AND player_id = $2',
+        [gameId, playerId]
+      );
+      const traits = stateResult.rows[0].traits;
+      
+      // 여행지 배수 조회
+      const travelResult = await client.query(
+        `SELECT c.metadata FROM games g
+         JOIN cards c ON c.code = g.travel_theme
+         WHERE g.id = $1`,
+        [gameId]
+      );
+      const multipliers = travelResult.rows[0]?.metadata?.multipliers || {};
+      
+      // 가중치 1배인 특성 찾기
+      const minorTraits = Object.keys(multipliers).filter(key => multipliers[key] === 1);
+      
+      // 변환 가능한 총 점수 계산
+      let availablePoints = 0;
+      for (const trait of minorTraits) {
+        availablePoints += traits[trait] || 0;
+      }
+      
+      const maxConversions = Math.floor(availablePoints / 3);
+      
+      // 전략: 가능한 모든 변환 수행 (추억 점수 극대화)
+      console.log(`🤖 AI 특성 변환 결정: ${maxConversions}회`);
+      
+      return maxConversions;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * AI 공동 계획 기여 결정
+   */
+  async decideJointPlanContribution(gameId: string, playerId: string): Promise<number> {
+    const client = await pool.connect();
+    try {
+      // 플레이어 상태 조회
+      const stateResult = await client.query(
+        'SELECT money FROM player_states WHERE game_id = $1 AND player_id = $2',
+        [gameId, playerId]
+      );
+      const money = stateResult.rows[0].money;
+      
+      // 공동 계획 목표 금액 조회
+      const gameResult = await client.query(
+        `SELECT c.cost FROM games g
+         JOIN cards c ON g.joint_plan_card_id = c.id
+         WHERE g.id = $1`,
+        [gameId]
+      );
+      const targetAmount = gameResult.rows[0]?.cost || 0;
+      
+      // 현재 기여 총액 조회
+      const contributionResult = await client.query(
+        `SELECT COALESCE(SUM(amount), 0) as total
+         FROM joint_plan_contributions jpc
+         JOIN player_states ps ON jpc.player_state_id = ps.id
+         WHERE ps.game_id = $1`,
+        [gameId]
+      );
+      const currentTotal = parseInt(contributionResult.rows[0].total);
+      
+      // 전략: 목표 달성을 위해 필요한 만큼 기여 (최소 3,000TC, 최대 9,000TC)
+      const needed = Math.max(0, targetAmount - currentTotal);
+      const maxContribution = Math.min(9000, money - 5000); // 최소 5,000TC는 남김
+      const contribution = Math.min(needed, maxContribution);
+      
+      // 500 단위로 반올림
+      const roundedContribution = Math.floor(contribution / 500) * 500;
+      
+      console.log(`🤖 AI 공동 계획 기여 결정: ${roundedContribution}TC (목표: ${targetAmount}TC, 현재: ${currentTotal}TC)`);
+      
+      return Math.max(0, roundedContribution);
+    } finally {
+      client.release();
+    }
+  }
+}
+
+export const aiPlayerService = new AIPlayerService();
