@@ -329,13 +329,13 @@ export class TurnService {
         
         // 플레이어 이름 조회
         const playerResult = await client.query(
-          `SELECT u.username 
+          `SELECT u.nickname 
            FROM players p 
            JOIN users u ON p.user_id = u.id 
            WHERE p.id = $1`,
           [playerId]
         );
-        const playerName = playerResult.rows[0]?.username || '플레이어';
+        const playerName = playerResult.rows[0]?.nickname || '플레이어';
         
         this.io.to(roomId).emit('action-completed', {
           playerId,

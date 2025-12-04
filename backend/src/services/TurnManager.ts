@@ -338,7 +338,7 @@ export class TurnManager {
       
       // 플레이어 상태 조회
       const playersResult = await client.query(
-        `SELECT ps.*, u.username as name, u.is_ai 
+        `SELECT ps.*, u.nickname as name, u.is_ai 
          FROM player_states ps
          JOIN players p ON ps.player_id = p.id
          JOIN users u ON p.user_id = u.id
