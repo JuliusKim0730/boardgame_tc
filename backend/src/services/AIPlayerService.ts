@@ -73,7 +73,20 @@ export class AIPlayerService {
         console.log(`  ⏱️ 결심 토큰 사용: ${Date.now() - tokenStartTime}ms`);
       }
 
-      // 6. 턴 종료
+      // 6. 14일차 공동 계획 기여 (턴 종료 전)
+      if (gameState.day === 14) {
+        const contributeStartTime = Date.now();
+        const contribution = await this.decideJointPlanContribution(gameId, playerId);
+        if (contribution > 0) {
+          console.log(`💰 AI 공동 계획 기여: ${contribution}TC`);
+          const { jointPlanService } = await import('./JointPlanService');
+          await jointPlanService.contribute(gameId, playerId, contribution);
+          await this.broadcastGameState(gameId);
+        }
+        console.log(`  ⏱️ 공동 계획 기여: ${Date.now() - contributeStartTime}ms`);
+      }
+
+      // 7. 턴 종료
       const endTurnStartTime = Date.now();
       console.log(`🤖 AI 턴 종료 중...`);
       const { turnManager } = await import('./TurnManager');

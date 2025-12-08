@@ -603,3 +603,17 @@ router.get('/games/:gameId/logs', async (req, res) => {
     res.status(400).json({ error: error.message });
   }
 });
+
+
+// CH16: 버린만큼 뽑기 실행
+router.post('/games/:gameId/discard-and-draw', async (req, res) => {
+  try {
+    const { gameId } = req.params;
+    const { playerId, cardIds } = req.body;
+    
+    const result = await chanceService.executeDiscardAndDraw(gameId, playerId, cardIds);
+    res.json(result);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message });
+  }
+});

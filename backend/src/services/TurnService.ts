@@ -124,13 +124,17 @@ export class TurnService {
       
       const currentPosition = stateResult.rows[0].position;
       const lastPosition = stateResult.rows[0].last_position;
+      const forcedMove = stateResult.rows[0].forced_move;
       
       console.log('현재 위치:', currentPosition);
       console.log('이전 위치:', lastPosition);
       console.log('목표 위치:', targetPosition);
+      console.log('강제 이동:', forcedMove);
       
-      // 연속 사용 금지 검증
-      if (targetPosition === lastPosition) {
+      // 연속 사용 금지 검증 (강제 이동이 아닌 경우에만)
+      // 같은 턴 내에서 이동 후 행동한 칸을 다시 선택하는 것을 방지
+      // 하지만 다른 날짜에는 같은 칸을 선택할 수 있음
+      if (!forcedMove && targetPosition === lastPosition && currentPosition !== targetPosition) {
         console.error('연속 사용 금지 위반');
         throw new Error('같은 칸을 연속으로 사용할 수 없습니다');
       }
@@ -639,30 +643,31 @@ export class TurnService {
       const playerStateId = stateResult.rows[0].id;
       
       const result = await this.drawCard(client, gameId, playerStateId, 'chance');
+      const card = result.card;
+      
+      console.log(`🎴 찬스 카드 드로우: ${card.code} - ${card.name}`);
+      
+      // 찬스 카드 효과 즉시 적용 (같은 트랜잭션 내에서)
+      const { chanceService } = await import('./ChanceService');
+      
+      let effectResult = null;
+      try {
+        // executeChance를 트랜잭션 내에서 실행
+        effectResult = await chanceService.executeChance(gameId, playerId, card.code);
+        console.log(`✅ 찬스 카드 효과 적용: ${card.code} - ${card.name}`, effectResult);
+      } catch (error: any) {
+        console.error(`❌ 찬스 카드 효과 적용 실패: ${card.code}`, error);
+        await client.query('ROLLBACK');
+        throw error;
+      }
       
       await client.query('COMMIT');
       
-      // 찬스 카드 효과 즉시 적용
-      const card = result.card;
-      const { chanceService } = await import('./ChanceService');
-      
-      try {
-        const effectResult = await chanceService.executeChance(gameId, playerId, card.code);
-        console.log(`✅ 찬스 카드 효과 적용: ${card.code} - ${card.name}`);
-        
-        return { 
-          card, 
-          effectApplied: true,
-          effectResult 
-        };
-      } catch (error: any) {
-        console.error(`❌ 찬스 카드 효과 적용 실패: ${card.code}`, error);
-        return { 
-          card, 
-          effectApplied: false,
-          error: error.message 
-        };
-      }
+      return { 
+        card, 
+        effectApplied: true,
+        effectResult 
+      };
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;

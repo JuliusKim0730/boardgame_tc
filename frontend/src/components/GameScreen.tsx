@@ -13,6 +13,9 @@ import FinalPurchaseModal from './FinalPurchaseModal';
 import ChanceInteractionModal from './ChanceInteractionModal';
 import ExtraActionModal from './ExtraActionModal';
 import JointPlanSelectModal from './JointPlanSelectModal';
+import DiscardSelectModal from './DiscardSelectModal';
+import PurchaseConfirmModal from './PurchaseConfirmModal';
+import PlayerSelectModal from './PlayerSelectModal';
 import './GameScreen.css';
 
 interface Props {
@@ -77,6 +80,13 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
   const [showExtraAction, setShowExtraAction] = useState(false);
   const [extraActionType, setExtraActionType] = useState<'extra_action' | 'repeat_current' | 'buddy_action'>('extra_action');
   const [showJointPlanSelect, setShowJointPlanSelect] = useState(false);
+  const [autoEndTimer, setAutoEndTimer] = useState<number | null>(null);
+  
+  // 새로운 찬스 카드 모달 상태
+  const [showDiscardSelect, setShowDiscardSelect] = useState(false);
+  const [showPurchaseConfirm, setShowPurchaseConfirm] = useState(false);
+  const [showPlayerSelect, setShowPlayerSelect] = useState(false);
+  const [playerSelectConfig, setPlayerSelectConfig] = useState<any>(null);
 
   // 게임 상태 로드
   const loadGameState = async (preserveActionState = false) => {
@@ -288,6 +298,9 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
           setDrawnCard(data.result.card);
           setShowCardDrawModal(true);
         }
+        
+        // 자동 턴 종료 타이머 시작 (3초)
+        setAutoEndTimer(3);
       } else {
         // 다른 플레이어의 행동 알림
         const actionNames: { [key: number]: string } = {
@@ -387,6 +400,24 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
     };
   }, [roomId, playerId, gameId]);
 
+  // 자동 턴 종료 타이머
+  useEffect(() => {
+    if (autoEndTimer === null || autoEndTimer <= 0) return;
+
+    const timer = setTimeout(() => {
+      if (autoEndTimer === 1) {
+        // 타이머 종료 - 자동 턴 종료
+        handleEndTurn();
+        setAutoEndTimer(null);
+      } else {
+        // 카운트다운
+        setAutoEndTimer(autoEndTimer - 1);
+      }
+    }, 1000);
+
+    return () => clearTimeout(timer);
+  }, [autoEndTimer]);
+
   const handleMove = async (position: number) => {
     console.log('=== handleMove 호출 ===');
     console.log('position:', position);
@@ -410,8 +441,18 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
       const response = await api.move(gameId, playerId, position);
       console.log('이동 API 응답:', response);
       
+      // 즉시 상태 업데이트 (버튼 변경을 위해)
       setSelectedPosition(position);
       setHasMoved(true);
+      
+      // 플레이어 상태도 즉시 업데이트
+      if (playerState) {
+        setPlayerState({
+          ...playerState,
+          position: position
+        });
+      }
+      
       setMessage(`${position}번 칸으로 이동했습니다. 행동을 선택하세요.`);
       console.log('이동 완료, hasMoved를 true로 설정');
       
@@ -496,6 +537,9 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
 
   const handleEndTurn = async () => {
     try {
+      // 타이머 취소
+      setAutoEndTimer(null);
+      
       await api.endTurn(gameId, playerId);
       setMessage('턴이 종료되었습니다.');
       setHasMoved(false);
@@ -508,6 +552,9 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
 
   const handleUseResolveToken = async (actionType: number) => {
     try {
+      // 타이머 취소
+      setAutoEndTimer(null);
+      
       // 결심 토큰 사용
       await api.useResolveToken(gameId, playerId, actionType);
       
@@ -522,6 +569,9 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
       
       // 상태 새로고침
       await loadGameState(true);
+      
+      // 다시 자동 턴 종료 타이머 시작
+      setAutoEndTimer(3);
     } catch (error: any) {
       setMessage(error.response?.data?.error || '결심 토큰 사용 실패');
     }
@@ -641,6 +691,57 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
     } catch (error: any) {
       console.error('공동 목표 선택 실패:', error);
       setMessage(error.response?.data?.error || '공동 목표 선택 실패');
+    }
+  };
+
+  // CH16: 버린만큼 뽑기 핸들러
+  const handleDiscardAndDraw = async (cardIds: string[]) => {
+    try {
+      const response = await api.post(`/games/${gameId}/discard-and-draw`, {
+        playerId,
+        cardIds
+      });
+      
+      setShowDiscardSelect(false);
+      setMessage(response.data.message || `${cardIds.length}장을 버리고 계획 카드를 획득했습니다!`);
+      
+      // 상태 새로고침
+      await loadGameState(true);
+    } catch (error: any) {
+      console.error('버린만큼 뽑기 실패:', error);
+      setMessage(error.response?.data?.error || '버린만큼 뽑기 실패');
+    }
+  };
+
+  // CH9: 구매 확인 핸들러
+  const handlePurchaseConfirm = async () => {
+    try {
+      // 구매 로직 실행
+      setShowPurchaseConfirm(false);
+      setMessage('계획 카드를 구매했습니다!');
+      
+      // 상태 새로고침
+      await loadGameState(true);
+    } catch (error: any) {
+      console.error('구매 실패:', error);
+      setMessage(error.response?.data?.error || '구매 실패');
+    }
+  };
+
+  // 플레이어 선택 핸들러
+  const handlePlayerSelect = async (selectedPlayerId: string) => {
+    try {
+      setShowPlayerSelect(false);
+      
+      if (playerSelectConfig?.onSelect) {
+        await playerSelectConfig.onSelect(selectedPlayerId);
+      }
+      
+      // 상태 새로고침
+      await loadGameState(true);
+    } catch (error: any) {
+      console.error('플레이어 선택 실패:', error);
+      setMessage(error.response?.data?.error || '플레이어 선택 실패');
     }
   };
 
@@ -912,7 +1013,7 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
                 className="btn-end-turn btn-primary"
                 onClick={handleEndTurn}
               >
-                턴 종료
+                {autoEndTimer !== null ? `턴 종료 (${autoEndTimer}초)` : '턴 종료'}
               </button>
               
               {playerState && playerState.resolve_token > 0 && (
@@ -1090,6 +1191,34 @@ function GameScreen({ roomId, gameId, playerId, onBackToLobby }: Props) {
         isOpen={showJointPlanSelect}
         onSelect={handleJointPlanSelect}
         onCancel={() => setShowJointPlanSelect(false)}
+      />
+
+      <DiscardSelectModal
+        isOpen={showDiscardSelect}
+        handCards={playerState?.hand_cards || []}
+        onConfirm={handleDiscardAndDraw}
+        onCancel={() => setShowDiscardSelect(false)}
+      />
+
+      <PurchaseConfirmModal
+        isOpen={showPurchaseConfirm}
+        currentMoney={playerState?.money || 0}
+        cost={1000}
+        description="1,000 TC를 지불해서 계획카드를 구매하시겠습니까?"
+        onConfirm={handlePurchaseConfirm}
+        onCancel={() => setShowPurchaseConfirm(false)}
+      />
+
+      <PlayerSelectModal
+        isOpen={showPlayerSelect}
+        title={playerSelectConfig?.title || '플레이어 선택'}
+        description={playerSelectConfig?.description || '플레이어를 선택하세요'}
+        players={allPlayers}
+        currentPlayerId={playerId}
+        filterCondition={playerSelectConfig?.filterCondition}
+        onSelect={handlePlayerSelect}
+        onCancel={() => setShowPlayerSelect(false)}
+        showGiveUp={playerSelectConfig?.showGiveUp}
       />
     </div>
   );

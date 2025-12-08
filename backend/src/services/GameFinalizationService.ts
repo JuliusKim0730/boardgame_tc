@@ -108,17 +108,23 @@ export class GameFinalizationService {
       const playerState = stateResult.rows[0];
       const traits = playerState.traits;
 
-      // 여행지 배수 조회
-      const travelResult = await client.query(
-        `SELECT c.metadata FROM games g
-         JOIN cards c ON c.code = g.travel_theme
-         WHERE g.id = $1`,
-        [gameId]
-      );
-      const multipliers = travelResult.rows[0]?.metadata?.multipliers || {};
+      // 플레이어의 여행지 카드 배수 조회
+      let multipliers: { [key: string]: number } = {};
+      if (playerState.travel_card_id) {
+        const travelCardResult = await client.query(
+          'SELECT metadata FROM cards WHERE id = $1',
+          [playerState.travel_card_id]
+        );
+        if (travelCardResult.rows.length > 0) {
+          const metadata = typeof travelCardResult.rows[0].metadata === 'string'
+            ? JSON.parse(travelCardResult.rows[0].metadata)
+            : travelCardResult.rows[0].metadata;
+          multipliers = metadata.multipliers || {};
+        }
+      }
 
       // 가중치 1배인 특성 찾기
-      const minorTraits = Object.keys(multipliers).filter(key => multipliers[key] === 1);
+      const minorTraits = Object.keys(multipliers).filter(key => (multipliers as any)[key] === 1);
       
       // 변환 가능한 총 점수 계산
       let availablePoints = 0;
@@ -216,15 +222,6 @@ export class GameFinalizationService {
       
       console.log('📊 최종 점수 계산 시작...');
       
-      // 여행지 배수 조회
-      const travelResult = await client.query(
-        `SELECT c.metadata FROM games g
-         JOIN cards c ON c.code = g.travel_theme
-         WHERE g.id = $1`,
-        [gameId]
-      );
-      const multipliers = travelResult.rows[0]?.metadata?.multipliers || {};
-
       // 플레이어 수 확인 (2인 전용 규칙)
       const playerCountResult = await client.query(
         'SELECT COUNT(*) as count FROM player_states WHERE game_id = $1',
@@ -255,6 +252,21 @@ export class GameFinalizationService {
 
       for (const playerState of playersResult.rows) {
         const traits = playerState.traits;
+
+        // 플레이어의 여행지 카드 배수 조회
+        let multipliers = { taste: 1, history: 1, nature: 1, culture: 1, leisure: 1, water: 1 };
+        if (playerState.travel_card_id) {
+          const travelCardResult = await client.query(
+            'SELECT metadata FROM cards WHERE id = $1',
+            [playerState.travel_card_id]
+          );
+          if (travelCardResult.rows.length > 0) {
+            const metadata = typeof travelCardResult.rows[0].metadata === 'string'
+              ? JSON.parse(travelCardResult.rows[0].metadata)
+              : travelCardResult.rows[0].metadata;
+            multipliers = metadata.multipliers || multipliers;
+          }
+        }
 
         // 특성 점수 × 배수
         const tasteScore = (traits.taste || 0) * (multipliers.taste || 1);
