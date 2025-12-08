@@ -771,29 +771,20 @@ export class ChanceService {
     };
   }
 
-  // CH19: 반전의 기회 - 찬스 카드 1장 더 뽑기
+  // CH19: 반전의 기회 - 현재 칸 행동 반복
   private async handleRepeatCurrentAction(client: any, gameId: string, playerId: string) {
-    // 플레이어 상태 ID 조회
-    const stateResult = await client.query(
-      'SELECT id FROM player_states WHERE game_id = $1 AND player_id = $2',
+    const positionResult = await client.query(
+      'SELECT position FROM player_states WHERE game_id = $1 AND player_id = $2',
       [gameId, playerId]
     );
-    const playerStateId = stateResult.rows[0].id;
     
-    // 찬스 카드 1장 드로우
-    const chanceCard = await this.drawCardFromDeck(client, gameId, playerStateId, 'chance');
-    
-    console.log(`🎴 CH19 효과: 찬스 카드 "${chanceCard.name}" 추가 드로우`);
-    
-    // 새로 뽑은 찬스 카드 효과 즉시 실행
-    const result = await this.executeChance(gameId, playerId, chanceCard.code);
+    const currentPosition = positionResult.rows[0].position;
     
     return { 
       type: 'special', 
-      action: 'draw_extra_chance',
-      extraCard: chanceCard,
-      extraResult: result,
-      message: `찬스 카드 "${chanceCard.name}"를 추가로 뽑았습니다!`
+      action: 'repeat_current', 
+      position: currentPosition,
+      message: `현재 위치(${currentPosition}번)에서 행동을 1회 더 수행할 수 있습니다`
     };
   }
 
@@ -854,30 +845,7 @@ export class ChanceService {
     );
   }
 
-  // 위치 교환 실행
-  private async executeSwapPosition(client: any, gameId: string, player1Id: string, player2Id: string) {
-    const pos1Result = await client.query(
-      'SELECT position FROM player_states WHERE game_id = $1 AND player_id = $2',
-      [gameId, player1Id]
-    );
-    const pos2Result = await client.query(
-      'SELECT position FROM player_states WHERE game_id = $1 AND player_id = $2',
-      [gameId, player2Id]
-    );
-
-    const pos1 = pos1Result.rows[0].position;
-    const pos2 = pos2Result.rows[0].position;
-
-    // 위치 교환 및 forced_move 플래그 설정
-    await client.query(
-      'UPDATE player_states SET position = $1, forced_move = TRUE WHERE game_id = $2 AND player_id = $3',
-      [pos2, gameId, player1Id]
-    );
-    await client.query(
-      'UPDATE player_states SET position = $1, forced_move = TRUE WHERE game_id = $2 AND player_id = $3',
-      [pos1, gameId, player2Id]
-    );
-  }
+  // 위치 교환 실행 (기존 버전 - 하단의 새 버전으로 대체됨)
 
   private async drawPlan(client: any, gameId: string, playerId: string) {
     const deckResult = await client.query(
@@ -1211,9 +1179,6 @@ export class ChanceService {
       });
     }
   }
-}
-
-export const chanceService = new ChanceService();
 
   // CH13 실행: 위치 교환 + 추가 행동
   private async executeSwapPosition(gameId: string, requesterId: string, targetId: string): Promise<any> {
@@ -1264,3 +1229,6 @@ export const chanceService = new ChanceService();
       client.release();
     }
   }
+}
+
+export const chanceService = new ChanceService();
