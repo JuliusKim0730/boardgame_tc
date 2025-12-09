@@ -87,13 +87,23 @@
 }
 
 /* ReactMarkdown 전체 너비 강제 적용 - 모든 하위 요소 */
-.modal-content *:not(table):not(thead):not(tbody):not(tr):not(th):not(td) {
+.modal-content,
+.modal-content *,
+.modal-content > *,
+.modal-content > * > *,
+.modal-content div {
   max-width: none !important;
+  width: 100% !important;
 }
 
-.modal-content > div {
-  width: 100% !important;
-  max-width: 100% !important;
+/* 테이블은 예외 */
+.modal-content table,
+.modal-content thead,
+.modal-content tbody,
+.modal-content tr,
+.modal-content th,
+.modal-content td {
+  width: auto !important;
 }
 
 /* 마크다운 스타일링 */
