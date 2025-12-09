@@ -2,6 +2,7 @@ import { useState } from 'react';
 import LobbyScreen from './components/LobbyScreen';
 import WaitingRoom from './components/WaitingRoom';
 import GameScreen from './components/GameScreen';
+import Header from './components/Header';
 import './App.css';
 
 function App() {
@@ -45,6 +46,8 @@ function App() {
 
   return (
     <div className="app">
+      <Header showHeader={true} />
+      
       {gameState === 'lobby' && (
         <LobbyScreen onRoomCreated={handleRoomCreated} />
       )}
