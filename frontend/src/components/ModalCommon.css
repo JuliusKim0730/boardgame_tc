@@ -86,9 +86,11 @@
   box-sizing: border-box;
 }
 
-.modal-content > * {
-  max-width: 100%;
-  width: 100%;
+/* ReactMarkdown 전체 너비 강제 적용 */
+.modal-content > *,
+.modal-content > * > * {
+  max-width: 100% !important;
+  width: 100% !important;
 }
 
 /* 마크다운 스타일링 */
