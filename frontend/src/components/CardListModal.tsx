@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import './ModalCommon.css';
 
 interface CardListModalProps {
@@ -287,7 +288,7 @@ function CardListModal({ isOpen, onClose }: CardListModalProps) {
           <button className="modal-close" onClick={onClose}>✕</button>
         </div>
         <div className="modal-content">
-          <ReactMarkdown>{cardListContent}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{cardListContent}</ReactMarkdown>
         </div>
       </div>
     </div>

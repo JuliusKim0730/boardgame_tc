@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import './ModalCommon.css';
 
 interface RulesModalProps {
@@ -236,7 +237,7 @@ function RulesModal({ isOpen, onClose }: RulesModalProps) {
           <button className="modal-close" onClick={onClose}>✕</button>
         </div>
         <div className="modal-content">
-          <ReactMarkdown>{rulesContent}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{rulesContent}</ReactMarkdown>
         </div>
       </div>
     </div>
