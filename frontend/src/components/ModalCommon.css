@@ -82,6 +82,13 @@
   flex: 1;
   line-height: 1.7;
   min-height: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.modal-content > * {
+  max-width: 100%;
+  width: 100%;
 }
 
 /* 마크다운 스타일링 */
