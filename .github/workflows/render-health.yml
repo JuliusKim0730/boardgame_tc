@@ -1,0 +1,16 @@
+name: render-health
+on:
+  push:
+    branches: [diag/render-health]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          for u in https://boardgame-tc.onrender.com/api/health https://boardgame-tc.onrender.com/ https://boardgame-backend.onrender.com/api/health; do
+            echo "=== $u"
+            curl -sS -m 120 -o body.txt -w "HTTP %{http_code} time %{time_total}s\n" -D headers.txt "$u" || echo "curl failed"
+            head -c 600 body.txt; echo; grep -i "x-render\|rndr\|server:" headers.txt || true
+          done
+          echo "=== create room test"
+          curl -sS -m 90 -X POST -H 'Content-Type: application/json' -d '{"nickname":"healthcheck"}' -w "\nHTTP %{http_code} time %{time_total}s\n" https://boardgame-tc.onrender.com/api/rooms || echo "curl failed"
