@@ -22,7 +22,7 @@ interface Slot {
   };
 }
 
-function WaitingRoom({ roomId, roomCode, userId, isHost, onGameStart, onBack }: Props) {
+function WaitingRoom({ roomId, roomCode, isHost, onGameStart, onBack }: Props) {
   const [slots, setSlots] = useState<Slot[]>([
     { index: 0, status: 'user' },
     { index: 1, status: 'user' },

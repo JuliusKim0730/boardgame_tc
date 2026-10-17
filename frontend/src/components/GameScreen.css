@@ -769,3 +769,28 @@
 .btn-resolve-action.disabled:hover {
   transform: none;
 }
+
+.final-waiting {
+  max-width: 480px;
+  margin: 60px auto;
+  padding: 32px;
+  text-align: center;
+}
+
+.final-waiting ul {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0 0;
+  text-align: left;
+  display: inline-block;
+}
+
+.final-waiting li {
+  padding: 4px 0;
+}
+
+.joint-plan-note {
+  margin-top: 8px;
+  font-size: 0.85rem;
+  color: #666;
+}

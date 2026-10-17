@@ -276,3 +276,69 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* 최종 결산: 기여 / 변환 섹션 */
+.final-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 20px 0 10px;
+  font-size: 1.05rem;
+}
+
+.btn-small {
+  padding: 6px 12px;
+  font-size: 0.85rem;
+}
+
+.final-joint p {
+  margin: 4px 0;
+}
+
+.final-hint {
+  color: #666;
+  font-size: 0.9rem;
+  margin: 4px 0 8px;
+}
+
+.final-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  border: 1px solid #ddd;
+  border-radius: 10px;
+}
+
+.final-stepper button {
+  min-width: 56px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 8px;
+  background: #667eea;
+  color: #fff;
+  cursor: pointer;
+}
+
+.final-stepper button:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+.final-stepper span {
+  min-width: 80px;
+  text-align: center;
+  font-weight: 600;
+}
+
+.card-points {
+  margin-top: 6px;
+  font-weight: 600;
+  color: #4caf50;
+}
+
+.final-section-title .btn-small {
+  flex: 0 0 auto;
+  width: auto;
+}

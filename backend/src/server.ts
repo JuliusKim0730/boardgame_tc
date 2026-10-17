@@ -7,6 +7,7 @@ import roomRoutes from './routes/roomRoutes';
 import gameRoutes from './routes/gameRoutes';
 import { setupGameSocket } from './ws/gameSocket';
 import { chanceService } from './services/ChanceService';
+import { ensureSchema } from './db/ensureSchema';
 
 const app = express();
 const httpServer = createServer(app);
@@ -117,63 +118,20 @@ import { turnManager } from './services/TurnManager';
 aiPlayerService.setSocketIO(io);
 turnManager.setSocketIO(io);
 
-aiScheduler.start();
 
-// 오래된 게임 정리 함수
-async function cleanupOldGames() {
+// 방치된 게임 정리 + 진행 중 게임의 턴 락 복원 (서버 재시작 대응)
+async function recoverGames() {
   const { pool } = await import('./db/pool');
-  const client = await pool.connect();
-  
   try {
-    console.log('🧹 오래된 게임 데이터 정리 시작...');
-    
-    // 1시간 이상 지난 게임 중 종료되지 않은 게임 찾기
-    const oldGamesResult = await client.query(`
-      SELECT id, room_id, status, created_at 
-      FROM games 
-      WHERE created_at < NOW() - INTERVAL '1 hour'
-      AND status NOT IN ('finished', 'finalizing')
-    `);
-    
-    if (oldGamesResult.rows.length > 0) {
-      console.log(`📋 ${oldGamesResult.rows.length}개의 오래된 게임 발견`);
-      
-      for (const game of oldGamesResult.rows) {
-        console.log(`  - 게임 ${game.id} (${game.status}, ${game.created_at})`);
-        
-        // 게임 상태를 finished로 변경
-        await client.query(
-          'UPDATE games SET status = $1, current_turn_player_id = NULL WHERE id = $2',
-          ['finished', game.id]
-        );
-        
-        // 관련 방도 in_progress로 유지 (재사용 가능)
-        // 또는 삭제하지 않고 그대로 둠
-      }
-      
-      console.log(`✅ ${oldGamesResult.rows.length}개의 오래된 게임 정리 완료`);
-    } else {
-      console.log('✅ 정리할 오래된 게임 없음');
-    }
-    
-    // 완료된 게임의 턴 락 제거 및 AI 스케줄러에서 제외
-    console.log('🧹 완료된 게임의 턴 락 정리...');
-    const finishedGames = await client.query(`
-      SELECT id FROM games WHERE status IN ('finished', 'finalizing')
-    `);
-    
-    for (const game of finishedGames.rows) {
-      turnManager.unlockTurn(game.id);
-      aiScheduler.stopGame(game.id); // AI 스케줄러에서 제외
-    }
-    
-    console.log(`✅ ${finishedGames.rows.length}개의 턴 락 정리 완료`);
-    
-    console.log('✅ 게임 데이터 정리 완료');
+    const abandoned = await pool.query(
+      `UPDATE games SET status = 'finished', current_turn_player_id = NULL
+        WHERE status IN ('setting', 'running') AND created_at < NOW() - INTERVAL '3 hours'
+        RETURNING id`
+    );
+    if (abandoned.rows.length > 0) console.log(`🧹 방치된 게임 ${abandoned.rows.length}개 종료 처리`);
+    await turnManager.restoreTurnLocks();
   } catch (error) {
-    console.error('❌ 게임 데이터 정리 실패:', error);
-  } finally {
-    client.release();
+    console.error('❌ 게임 복구 실패:', error);
   }
 }
 
@@ -185,8 +143,9 @@ httpServer.listen(PORT, async () => {
   console.log(`🤖 AI Scheduler started`);
   console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
   
-  // 오래된 게임 정리 (턴 락 복원 대신)
-  await cleanupOldGames();
+  await ensureSchema();
+  await recoverGames();
+  aiScheduler.start();
 });
 
 // Vercel Serverless Function Export

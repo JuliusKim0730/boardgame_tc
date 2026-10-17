@@ -1,1233 +1,564 @@
 import { pool } from '../db/pool';
 import { Server } from 'socket.io';
+import { drawCard, returnToDeckBottom } from './DeckService';
+import { addEffects, MAX_RESOLVE_TOKENS, parseJSON, Traits } from '../game/rules';
+import {
+  getPlayerCount,
+  getPlayerState,
+  getRoomId,
+  grantExtraCredit,
+  isAIPlayer,
+  logEvent,
+  withTransaction,
+} from './TurnState';
 
-interface ChanceInteraction {
-  gameId: string;
-  requesterId: string;
+/** 요청자가 직접 골라야 하는 찬스 카드 */
+export type ChoiceType = 'shared_house' | 'shared_invest' | 'purchase_request' | 'card_exchange' | 'swap_position' | 'buddy_action';
+
+export interface ChanceChoice {
   targetId?: string;
-  chanceCode: string;
-  timeout: NodeJS.Timeout;
-  resolve: (value: any) => void;
-  reject: (reason: any) => void;
+  cardId?: string; // CH10: 사 올 상대 카드
+  requesterCardId?: string; // CH11: 내가 줄 카드
+  targetCardId?: string; // CH11: 받아 올 카드
 }
 
+interface PendingInteraction {
+  gameId: string;
+  requesterId: string;
+  type: ChoiceType;
+  timeout: NodeJS.Timeout;
+  resolve: (choice: ChanceChoice | null) => void;
+}
+
+const CHOICE_TIMEOUT_MS = 60000;
+
+const CHOICE_MESSAGES: Record<ChoiceType, string> = {
+  shared_house: '함께 집안일을 할 플레이어를 선택하세요',
+  shared_invest: '여행 지원 효과를 함께 받을 플레이어를 선택하세요',
+  purchase_request: '1,000TC에 사 올 상대의 계획 카드를 선택하세요',
+  card_exchange: '교환할 플레이어와 카드를 선택하세요',
+  swap_position: '위치를 교환할 플레이어를 선택하세요',
+  buddy_action: '동행 버디로 지목할 플레이어를 선택하세요',
+};
+
 export class ChanceService {
-  private pendingInteractions: Map<string, ChanceInteraction> = new Map();
+  private pendingInteractions = new Map<string, PendingInteraction>();
+  // CH16/CH17처럼 같은 턴 안에 후속 선택이 필요한 카드
+  private pendingDiscard = new Map<string, string>(); // gameId -> playerId
+  private pendingJointChoice = new Map<string, { playerId: string; options: string[] }>();
   private io: Server | null = null;
 
   setSocketIO(io: Server) {
     this.io = io;
   }
 
-  // 플레이어 수 조회
-  private async getPlayerCount(gameId: string): Promise<number> {
-    const result = await pool.query(
-      'SELECT COUNT(*) as count FROM player_states WHERE game_id = $1',
-      [gameId]
-    );
-    return parseInt(result.rows[0].count);
+  /** 찬스 카드 효과 실행 (TurnService가 카드를 뽑은 직후 호출) */
+  async executeCard(gameId: string, playerId: string, card: any): Promise<any> {
+    const metadata = parseJSON<any>(card.metadata, {});
+    const effects = parseJSON<any>(card.effects, {});
+
+    if (metadata.forbidden_2p && (await getPlayerCount(pool, gameId)) === 2) {
+      return { type: 'skipped', message: '2인 플레이에서는 효과가 없는 카드입니다' };
+    }
+
+    const result = await this.dispatch(gameId, playerId, card.code, metadata, effects);
+    await logEvent(pool, gameId, 'chance_resolved', { playerId, code: card.code, message: result.message });
+    return { ...result, chanceCode: card.code };
   }
 
-  // 찬스 카드 실행
-  async executeChance(gameId: string, playerId: string, cardCode: string): Promise<any> {
-    const client = await pool.connect();
-    try {
-      const cardResult = await client.query(
-        'SELECT * FROM cards WHERE code = $1',
-        [cardCode]
-      );
-      
-      if (cardResult.rows.length === 0) {
-        throw new Error('카드를 찾을 수 없습니다');
+  private async dispatch(gameId: string, playerId: string, code: string, metadata: any, effects: any): Promise<any> {
+    switch (metadata.type) {
+      case 'money': {
+        const amount = Number(effects.money || 0);
+        await withTransaction((c) => this.addMoney(c, gameId, playerId, amount));
+        return { type: 'money', amount, message: `${amount >= 0 ? '+' : ''}${amount.toLocaleString()}TC` };
       }
-
-      const card = cardResult.rows[0];
-      
-      // metadata가 문자열이면 파싱
-      let metadata = card.metadata || {};
-      if (typeof metadata === 'string') {
-        try {
-          metadata = JSON.parse(metadata);
-        } catch (e) {
-          console.error('metadata 파싱 실패:', metadata);
-          metadata = {};
-        }
-      }
-      
-      console.log(`🎴 찬스 카드 실행: ${card.code} - ${card.name}, 타입: ${metadata.type}`);
-
-      // 2인 전용 금지 카드 체크
-      const playerCount = await this.getPlayerCount(gameId);
-      if (playerCount === 2 && metadata.forbidden_2p) {
-        throw new Error(`이 카드는 2인 플레이에서 사용할 수 없습니다. (${card.name})`);
-      }
-
-      // 카드 타입별 처리
-      switch (metadata.type) {
-        case 'money':
-          return await this.handleMoneyCard(client, gameId, playerId, card);
-        
-        case 'interaction':
-          return await this.handleInteractionCard(gameId, playerId, card, metadata.action);
-        
-        case 'draw':
-          return await this.handleDrawCard(client, gameId, playerId, metadata.action);
-        
-        case 'special':
-          return await this.handleSpecialCard(client, gameId, playerId, metadata.action);
-        
-        case 'catchup':
-          return await this.handleCatchupCard(client, gameId, playerId, metadata.action);
-        
-        default:
-          throw new Error('알 수 없는 카드 타입입니다');
-      }
-    } finally {
-      client.release();
+      case 'interaction':
+        return this.handleInteraction(gameId, playerId, metadata.action);
+      case 'draw':
+        if (metadata.action === 'draw_plan') return this.drawPlans(gameId, [playerId], 'CH15');
+        return this.catchupPlan(gameId);
+      case 'special':
+        return this.handleSpecial(gameId, playerId, metadata.action);
+      case 'catchup':
+        return this.handleCatchup(gameId, playerId, metadata.action);
+      default:
+        return { type: 'unknown', message: `알 수 없는 찬스 카드입니다 (${code})` };
     }
   }
 
-  // 돈 카드 처리
-  private async handleMoneyCard(client: any, gameId: string, playerId: string, card: any) {
-    // effects가 문자열이면 파싱
-    let effects = card.effects;
-    if (typeof effects === 'string') {
-      try {
-        effects = JSON.parse(effects);
-      } catch (e) {
-        console.error('effects 파싱 실패:', effects);
-        effects = {};
-      }
-    }
-    
-    const moneyChange = effects.money || 0;
-    console.log(`💰 돈 카드 효과 적용: ${card.code} - ${card.name}, 금액: ${moneyChange}TC`);
-    
-    // 플레이어 상태 ID 조회
-    const stateResult = await client.query(
-      'SELECT id FROM player_states WHERE game_id = $1 AND player_id = $2',
-      [gameId, playerId]
-    );
-    
-    if (stateResult.rows.length === 0) {
-      throw new Error('플레이어를 찾을 수 없습니다');
-    }
-    
-    const playerStateId = stateResult.rows[0].id;
-    
-    // 돈 업데이트
-    await client.query(
-      'UPDATE player_states SET money = money + $1 WHERE id = $2',
-      [moneyChange, playerStateId]
-    );
-    
-    // 업데이트 후 금액 확인
-    const verifyResult = await client.query(
-      'SELECT money FROM player_states WHERE id = $1',
-      [playerStateId]
-    );
-    
-    console.log(`✅ 돈 업데이트 완료: ${moneyChange > 0 ? '+' : ''}${moneyChange}TC, 현재 잔액: ${verifyResult.rows[0].money}TC`);
+  // ---------------------------------------------------------------------------
+  // 상호작용 카드 (CH8~CH13)
+  // ---------------------------------------------------------------------------
 
-    return { 
-      type: 'money', 
-      amount: moneyChange, 
-      cardName: card.name,
-      message: `${card.name}: ${moneyChange > 0 ? '+' : ''}${moneyChange}TC`
-    };
-  }
+  private async handleInteraction(gameId: string, requesterId: string, action: string): Promise<any> {
+    if (action === 'summon_all') return this.summonAll(gameId, requesterId);
 
-  // 상호작용 카드 처리
-  private async handleInteractionCard(gameId: string, playerId: string, card: any, action: string) {
-    switch (action) {
+    const type = action as ChoiceType;
+    const choice = await this.getChoice(gameId, requesterId, type);
+    if (!choice?.targetId) return { type: 'interaction', action, message: '대상을 선택하지 않아 효과가 사라졌습니다' };
+
+    switch (type) {
       case 'shared_house':
-        return await this.handleSharedHouse(gameId, playerId);
-      
+        return this.sharedHouse(gameId, requesterId, choice.targetId);
       case 'shared_invest':
-        return await this.handleSharedInvest(gameId, playerId);
-      
+        return this.sharedInvest(gameId, requesterId, choice.targetId);
       case 'purchase_request':
-        return await this.handlePurchaseRequest(gameId, playerId);
-      
+        return this.purchaseRequest(gameId, requesterId, choice);
       case 'card_exchange':
-        return await this.handleCardExchange(gameId, playerId);
-      
-      case 'summon_all':
-        return await this.handleSummonAll(gameId, playerId);
-      
+        return this.cardExchange(gameId, requesterId, choice);
       case 'swap_position':
-        return await this.handleSwapPosition(gameId, playerId);
-      
+        return this.swapPosition(gameId, requesterId, choice.targetId);
       default:
-        throw new Error('알 수 없는 상호작용입니다');
+        return { type: 'interaction', action, message: '' };
     }
   }
 
-  // CH8: 친구랑 같이 집안일
-  private async handleSharedHouse(gameId: string, requesterId: string): Promise<any> {
-    const interactionId = `${gameId}-${Date.now()}`;
-    
-    // AI 플레이어 자동 응답 체크
-    const isRequesterAI = await this.isAIPlayer(requesterId);
-    
-    if (isRequesterAI) {
-      // AI가 요청자인 경우: 랜덤 플레이어 선택 (자신 제외)
-      const targetId = await this.selectRandomPlayer(gameId, requesterId);
-      
-      // 대상이 AI면 자동 수락
-      const isTargetAI = await this.isAIPlayer(targetId);
-      if (isTargetAI) {
-        return await this.executeSharedHouse(gameId, requesterId, targetId, true);
+  /**
+   * 요청자의 선택을 받는다. AI는 즉시 AI 정책으로 결정하고,
+   * 사람은 소켓으로 선택 창을 띄운 뒤 응답(최대 60초)을 기다린다. 시간 초과 시 자동 선택.
+   */
+  private async getChoice(gameId: string, requesterId: string, type: ChoiceType): Promise<ChanceChoice | null> {
+    const { aiPlayerService } = await import('./AIPlayerService');
+    if (await isAIPlayer(pool, requesterId)) {
+      return aiPlayerService.chooseForChance(gameId, requesterId, type);
+    }
+
+    const roomId = await getRoomId(gameId);
+    const interactionId = `${gameId}-${type}-${Date.now()}`;
+    const choice = await new Promise<ChanceChoice | null>((resolve) => {
+      const timeout = setTimeout(() => {
+        this.pendingInteractions.delete(interactionId);
+        resolve(null);
+      }, CHOICE_TIMEOUT_MS);
+      this.pendingInteractions.set(interactionId, { gameId, requesterId, type, timeout, resolve });
+      this.io?.to(roomId || gameId).emit('chance-request', {
+        interactionId,
+        type,
+        requesterId,
+        timeoutMs: CHOICE_TIMEOUT_MS,
+        message: CHOICE_MESSAGES[type],
+      });
+    });
+
+    if (roomId) this.io?.to(roomId).emit('chance-resolved', { interactionId, type, requesterId });
+    if (choice && (choice as any).accepted !== false && choice.targetId) return choice;
+    // 시간 초과 또는 취소: 효과가 낭비되지 않도록 자동 선택
+    return aiPlayerService.chooseForChance(gameId, requesterId, type);
+  }
+
+  /** 프런트엔드 선택 응답 */
+  async respondToInteraction(interactionId: string, response: ChanceChoice & { accepted?: boolean }): Promise<void> {
+    const pending = this.pendingInteractions.get(interactionId);
+    if (!pending) throw new Error('상호작용을 찾을 수 없습니다 (시간 초과)');
+    clearTimeout(pending.timeout);
+    this.pendingInteractions.delete(interactionId);
+    pending.resolve(response);
+  }
+
+  private async sharedHouse(gameId: string, requesterId: string, targetId: string) {
+    return withTransaction(async (client) => {
+      const gains: string[] = [];
+      for (const pid of [requesterId, targetId]) {
+        const card = await drawCard(client, gameId, 'house');
+        if (!card) continue;
+        const money = Number(card.effects.money || 0);
+        await this.addMoney(client, gameId, pid, money);
+        gains.push(`${await this.nickname(client, pid)} "${card.name}" +${money.toLocaleString()}TC`);
       }
-      
-      // 대상이 사람이면 요청 전송
-      return new Promise((resolve, reject) => {
-        const timeout = setTimeout(async () => {
-          this.pendingInteractions.delete(interactionId);
-          reject(new Error('응답 시간 초과'));
-        }, 30000);
-
-        this.pendingInteractions.set(interactionId, {
-          gameId,
-          requesterId,
-          targetId,
-          chanceCode: 'CH8',
-          timeout,
-          resolve,
-          reject
-        });
-
-        this.io?.to(gameId).emit('chance-request', {
-          interactionId,
-          type: 'shared_house',
-          requesterId,
-          targetId,
-          message: '함께 집안일을 할 플레이어를 선택하세요'
-        });
-      });
-    }
-    
-    // 사람이 요청자인 경우: 기존 로직
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(async () => {
-        this.pendingInteractions.delete(interactionId);
-        reject(new Error('응답 시간 초과'));
-      }, 30000);
-
-      this.pendingInteractions.set(interactionId, {
-        gameId,
-        requesterId,
-        chanceCode: 'CH8',
-        timeout,
-        resolve,
-        reject
-      });
-
-      this.io?.to(gameId).emit('chance-request', {
-        interactionId,
-        type: 'shared_house',
-        requesterId,
-        message: '함께 집안일을 할 플레이어를 선택하세요'
-      });
+      return { type: 'interaction', action: 'shared_house', targetId, message: `함께 집안일! ${gains.join(', ')}` };
     });
   }
 
-  // CH9: 공동 투자
-  private async handleSharedInvest(gameId: string, requesterId: string): Promise<any> {
-    const interactionId = `${gameId}-${Date.now()}`;
-    
-    // AI 플레이어 자동 응답 체크
-    const isRequesterAI = await this.isAIPlayer(requesterId);
-    
-    if (isRequesterAI) {
-      // AI가 요청자인 경우: 랜덤 플레이어 선택 (자신 제외)
-      const targetId = await this.selectRandomPlayer(gameId, requesterId);
-      
-      // 대상이 AI면 자동 수락
-      const isTargetAI = await this.isAIPlayer(targetId);
-      if (isTargetAI) {
-        return await this.executeSharedInvest(gameId, requesterId, targetId, true);
-      }
-      
-      // 대상이 사람이면 요청 전송
-      return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          this.pendingInteractions.delete(interactionId);
-          reject(new Error('응답 시간 초과'));
-        }, 30000);
-
-        this.pendingInteractions.set(interactionId, {
-          gameId,
-          requesterId,
-          targetId,
-          chanceCode: 'CH9',
-          timeout,
-          resolve,
-          reject
-        });
-
-        this.io?.to(gameId).emit('chance-request', {
-          interactionId,
-          type: 'shared_invest',
-          requesterId,
-          targetId,
-          message: '함께 투자할 플레이어를 선택하세요'
-        });
-      });
-    }
-    
-    // 사람이 요청자인 경우: 기존 로직
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.pendingInteractions.delete(interactionId);
-        reject(new Error('응답 시간 초과'));
-      }, 30000);
-
-      this.pendingInteractions.set(interactionId, {
-        gameId,
-        requesterId,
-        chanceCode: 'CH9',
-        timeout,
-        resolve,
-        reject
-      });
-
-      this.io?.to(gameId).emit('chance-request', {
-        interactionId,
-        type: 'shared_invest',
-        requesterId,
-        message: '함께 투자할 플레이어를 선택하세요'
-      });
+  private async sharedInvest(gameId: string, requesterId: string, targetId: string) {
+    return withTransaction(async (client) => {
+      const card = await drawCard(client, gameId, 'support');
+      if (!card) return { type: 'interaction', action: 'shared_invest', message: '여행 지원 카드가 소진되었습니다' };
+      const money = Number(card.effects.money || 0);
+      await this.addMoney(client, gameId, requesterId, money);
+      await this.addMoney(client, gameId, targetId, money);
+      const target = await this.nickname(client, targetId);
+      return {
+        type: 'interaction',
+        action: 'shared_invest',
+        targetId,
+        supportCard: card,
+        message: `"${card.name}" 효과를 ${target}님과 함께 받음 (각 ${money >= 0 ? '+' : ''}${money.toLocaleString()}TC)`,
+      };
     });
   }
 
-  // CH10: 계획 구매 요청
-  private async handlePurchaseRequest(gameId: string, requesterId: string): Promise<any> {
-    const interactionId = `${gameId}-${Date.now()}`;
-    
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.pendingInteractions.delete(interactionId);
-        resolve({ accepted: false, reason: 'timeout' });
-      }, 30000);
-
-      this.pendingInteractions.set(interactionId, {
-        gameId,
-        requesterId,
-        chanceCode: 'CH10',
-        timeout,
-        resolve,
-        reject
-      });
-
-      this.io?.to(gameId).emit('chance-request', {
-        interactionId,
-        type: 'purchase_request',
-        requesterId,
-        price: 1000,
-        message: '1,000원에 계획 카드를 판매하시겠습니까?'
-      });
-    });
-  }
-
-  // CH11: 계획 교환
-  private async handleCardExchange(gameId: string, requesterId: string): Promise<any> {
-    const interactionId = `${gameId}-${Date.now()}`;
-    
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.pendingInteractions.delete(interactionId);
-        resolve({ accepted: false, reason: 'timeout' });
-      }, 30000);
-
-      this.pendingInteractions.set(interactionId, {
-        gameId,
-        requesterId,
-        chanceCode: 'CH11',
-        timeout,
-        resolve,
-        reject
-      });
-
-      this.io?.to(gameId).emit('chance-request', {
-        interactionId,
-        type: 'card_exchange',
-        requesterId,
-        message: '계획 카드를 교환하시겠습니까?'
-      });
-    });
-  }
-
-  // CH12: 모두 내 자리로
-  private async handleSummonAll(gameId: string, playerId: string): Promise<any> {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-
-      // 요청자의 현재 위치 조회
-      const positionResult = await client.query(
-        'SELECT position FROM player_states WHERE game_id = $1 AND player_id = $2',
-        [gameId, playerId]
+  private async purchaseRequest(gameId: string, requesterId: string, choice: ChanceChoice) {
+    return withTransaction(async (client) => {
+      const buyer = await getPlayerState(client, gameId, requesterId);
+      const seller = await getPlayerState(client, gameId, choice.targetId!);
+      if (buyer.money < 1000) return { type: 'interaction', action: 'purchase_request', message: 'TC가 부족해 구매하지 못했습니다' };
+      const hand = await client.query(
+        `SELECT h.id, c.name FROM hands h JOIN cards c ON c.id = h.card_id
+          WHERE h.player_state_id = $1 AND c.type = 'plan' AND ($2::uuid IS NULL OR h.card_id = $2::uuid)
+          ORDER BY h.seq LIMIT 1`,
+        [seller.id, choice.cardId || null]
       );
-      const targetPosition = positionResult.rows[0].position;
-
-      // 모든 플레이어를 해당 위치로 이동하고 forced_move 플래그 설정
+      if (hand.rows.length === 0) return { type: 'interaction', action: 'purchase_request', message: '상대에게 계획 카드가 없습니다' };
+      await client.query('UPDATE player_states SET money = money - 1000 WHERE id = $1', [buyer.id]);
+      await client.query('UPDATE player_states SET money = money + 1000 WHERE id = $1', [seller.id]);
       await client.query(
-        'UPDATE player_states SET position = $1, forced_move = TRUE WHERE game_id = $2 AND player_id != $3',
-        [targetPosition, gameId, playerId]
+        'UPDATE hands SET player_state_id = $1, seq = (SELECT COALESCE(MAX(seq), -1) + 1 FROM hands WHERE player_state_id = $1) WHERE id = $2',
+        [buyer.id, hand.rows[0].id]
       );
-
-      await client.query('COMMIT');
-
-      this.io?.to(gameId).emit('all-summoned', {
-        playerId,
-        position: targetPosition
-      });
-
-      return { type: 'summon_all', position: targetPosition };
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
-
-  // CH13: 자릿수 바꾸기
-  private async handleSwapPosition(gameId: string, requesterId: string): Promise<any> {
-    const interactionId = `${gameId}-${Date.now()}`;
-    
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.pendingInteractions.delete(interactionId);
-        reject(new Error('응답 시간 초과'));
-      }, 30000);
-
-      this.pendingInteractions.set(interactionId, {
-        gameId,
-        requesterId,
-        chanceCode: 'CH13',
-        timeout,
-        resolve,
-        reject
-      });
-
-      this.io?.to(gameId).emit('chance-request', {
-        interactionId,
-        type: 'swap_position',
-        requesterId,
-        message: '위치를 교환할 플레이어를 선택하세요'
-      });
+      const target = await this.nickname(client, choice.targetId!);
+      return {
+        type: 'interaction',
+        action: 'purchase_request',
+        targetId: choice.targetId,
+        message: `${target}님의 "${hand.rows[0].name}"을(를) 1,000TC에 구매`,
+      };
     });
   }
 
-  // 드로우 카드 처리
-  private async handleDrawCard(client: any, gameId: string, playerId: string, action: string) {
+  private async cardExchange(gameId: string, requesterId: string, choice: ChanceChoice) {
+    return withTransaction(async (client) => {
+      const me = await getPlayerState(client, gameId, requesterId);
+      const other = await getPlayerState(client, gameId, choice.targetId!);
+      const pick = async (stateId: string, cardId?: string) =>
+        (
+          await client.query(
+            `SELECT h.id, c.name FROM hands h JOIN cards c ON c.id = h.card_id
+              WHERE h.player_state_id = $1 AND c.type = 'plan' AND ($2::uuid IS NULL OR h.card_id = $2::uuid)
+              ORDER BY h.seq LIMIT 1`,
+            [stateId, cardId || null]
+          )
+        ).rows[0];
+      const mine = await pick(me.id, choice.requesterCardId);
+      const theirs = await pick(other.id, choice.targetCardId);
+      if (!mine || !theirs) return { type: 'interaction', action: 'card_exchange', message: '교환할 계획 카드가 없습니다' };
+      await client.query('UPDATE hands SET player_state_id = $1 WHERE id = $2', [other.id, mine.id]);
+      await client.query('UPDATE hands SET player_state_id = $1 WHERE id = $2', [me.id, theirs.id]);
+      const target = await this.nickname(client, choice.targetId!);
+      return {
+        type: 'interaction',
+        action: 'card_exchange',
+        targetId: choice.targetId,
+        message: `${target}님과 "${mine.name}" ↔ "${theirs.name}" 교환`,
+      };
+    });
+  }
+
+  /** CH12: 모든 플레이어를 내 칸으로. 이번 라운드 아직 행동 전인 플레이어는 그 칸에서 바로 행동 */
+  private async summonAll(gameId: string, requesterId: string) {
+    const position = await withTransaction(async (client) => {
+      const me = await getPlayerState(client, gameId, requesterId);
+      await client.query(
+        `UPDATE player_states SET position = $1, forced_move = (turn_order > $2)
+          WHERE game_id = $3 AND player_id <> $4`,
+        [me.position, me.turn_order, gameId, requesterId]
+      );
+      return me.position;
+    });
+    const roomId = await getRoomId(gameId);
+    if (roomId) this.io?.to(roomId).emit('all-summoned', { playerId: requesterId, position });
+    return { type: 'interaction', action: 'summon_all', position, message: `모든 플레이어가 ${position}번 칸으로 이동했습니다` };
+  }
+
+  /** CH13: 위치 교환. 이미 행동한 요청자는 추가 행동 없음(룰북 6.2) */
+  private async swapPosition(gameId: string, requesterId: string, targetId: string) {
+    return withTransaction(async (client) => {
+      const me = await getPlayerState(client, gameId, requesterId);
+      const other = await getPlayerState(client, gameId, targetId);
+      await client.query('UPDATE player_states SET position = $1 WHERE id = $2', [other.position, me.id]);
+      await client.query('UPDATE player_states SET position = $1, forced_move = $2 WHERE id = $3', [
+        me.position,
+        other.turn_order > me.turn_order,
+        other.id,
+      ]);
+      const target = await this.nickname(client, targetId);
+      return {
+        type: 'interaction',
+        action: 'swap_position',
+        targetId,
+        message: `${target}님과 자리 교환 (${me.position}번 ↔ ${other.position}번)`,
+      };
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // 드로우 / 특수 / 캐치업
+  // ---------------------------------------------------------------------------
+
+  private async handleSpecial(gameId: string, playerId: string, action: string): Promise<any> {
     switch (action) {
-      case 'catchup_plan':
-        // CH14: 계획 최저 플레이어에게 드로우
-        const catchupResult = await this.drawPlanForLowest(client, gameId);
+      case 'extra_action':
+        await withTransaction((c) => grantExtraCredit(c, gameId, playerId, { source: 'CH18' }));
+        return { type: 'special', action: 'extra_action', message: '이동 없이 행동 1회를 추가로 수행할 수 있습니다' };
+
+      case 'repeat_current': {
+        const position = await withTransaction(async (c) => {
+          const me = await getPlayerState(c, gameId, playerId);
+          await grantExtraCredit(c, gameId, playerId, {
+            source: 'CH19',
+            allowRepeat: true,
+            fixedAction: me.position === 6 ? undefined : me.position,
+          });
+          return me.position;
+        });
         return {
-          type: 'draw',
-          action: 'catchup_plan',
-          cardId: (catchupResult as any).cardId,
-          message: (catchupResult as any).cardId 
-            ? `계획 카드가 가장 적은 플레이어에게 카드를 지급했습니다!`
-            : '계획 카드를 지급할 수 없습니다'
+          type: 'special',
+          action: 'repeat_current',
+          position,
+          message: `현재 칸(${position}번) 행동을 1회 더 수행할 수 있습니다`,
         };
-      
-      case 'draw_plan':
-        // CH15: 계획 1장 드로우
-        const drawResult = await this.drawPlan(client, gameId, playerId);
-        return {
-          type: 'draw',
-          action: 'draw_plan',
-          cardId: (drawResult as any).cardId,
-          message: (drawResult as any).cardId 
-            ? `계획 카드 1장을 획득했습니다!`
-            : '더 이상 뽑을 카드가 없습니다'
-        };
-      
+      }
+
+      case 'joint_plan_support':
+        // CH20: 공동 목표에 3,000TC가 지원된다 (본인 TC 차감 없음, 본인 기여로 집계)
+        await withTransaction(async (c) => {
+          const me = await getPlayerState(c, gameId, playerId);
+          await c.query('INSERT INTO joint_plan_contributions (game_id, player_state_id, amount) VALUES ($1, $2, 3000)', [
+            gameId,
+            me.id,
+          ]);
+        });
+        return { type: 'special', action: 'joint_plan_support', amount: 3000, message: '공동 목표에 3,000TC 지원!' };
+
+      case 'draw_discarded':
+        return this.startDiscardAndDraw(gameId, playerId);
+
+      case 'select_joint_plan':
+        return this.startJointPlanChoice(gameId, playerId);
+
       default:
-        return { type: 'draw', action };
+        return { type: 'special', action, message: '' };
     }
   }
 
-  // 캐치업 카드 처리
-  private async handleCatchupCard(client: any, gameId: string, playerId: string, action: string) {
+  private async handleCatchup(gameId: string, playerId: string, action: string): Promise<any> {
     switch (action) {
       case 'catchup_money':
-        // CH21: 엄마의 응원 - TC 가장 적은 사람 +2,000TC
-        return await this.catchupMoney(client, gameId);
-      
+        return withTransaction(async (c) => {
+          const lowest = await this.lowestBy(c, gameId, 'money');
+          for (const p of lowest) await this.addMoney(c, gameId, p.player_id, 2000);
+          return {
+            type: 'catchup',
+            action: 'catchup_money',
+            targetPlayerIds: lowest.map((p) => p.player_id),
+            message: `TC가 가장 적은 ${await this.names(c, lowest)} +2,000TC`,
+          };
+        });
       case 'catchup_plan':
-        // CH22: 여행 선생님의 조언 - 일반 계획 가장 적은 사람 +1
-        return await this.drawPlanForLowest(client, gameId);
-      
+        return this.catchupPlan(gameId);
       case 'catchup_memory':
-        // CH23, CH24: 추억 가장 낮은 사람 +2
-        return await this.catchupMemory(client, gameId);
-      
-      case 'buddy_action':
-        // CH25: 동행 버디 - 본인 행동1회, 지목1명 행동1회
-        return await this.handleBuddyAction(gameId, playerId);
-      
+        return withTransaction(async (c) => {
+          const lowest = await this.lowestBy(c, gameId, 'memory');
+          for (const p of lowest) await this.addTraits(c, p.id, { memory: 2 });
+          return {
+            type: 'catchup',
+            action: 'catchup_memory',
+            targetPlayerIds: lowest.map((p) => p.player_id),
+            message: `추억이 가장 낮은 ${await this.names(c, lowest)} 추억 +2`,
+          };
+        });
+      case 'buddy_action': {
+        // CH25: 본인 추가 행동 1회 + 지목한 1명은 결심 토큰 1개(다음 자기 턴에 행동 1회)
+        const choice = await this.getChoice(gameId, playerId, 'buddy_action');
+        const message = await withTransaction(async (c) => {
+          await grantExtraCredit(c, gameId, playerId, { source: 'CH25' });
+          if (!choice?.targetId) return '추가 행동 1회';
+          await c.query(
+            'UPDATE player_states SET resolve_token = LEAST($1, resolve_token + 1) WHERE game_id = $2 AND player_id = $3',
+            [MAX_RESOLVE_TOKENS, gameId, choice.targetId]
+          );
+          return `추가 행동 1회 + ${await this.nickname(c, choice.targetId)}님 결심 토큰 +1`;
+        });
+        return { type: 'catchup', action: 'buddy_action', targetId: choice?.targetId, message };
+      }
       default:
-        return { type: 'catchup', action };
+        return { type: 'catchup', action, message: '' };
     }
   }
 
-  // CH21: TC 가장 적은 사람에게 +2,000TC
-  private async catchupMoney(client: any, gameId: string) {
-    const result = await client.query(
-      `SELECT player_id, money
-       FROM player_states
-       WHERE game_id = $1
-       ORDER BY money ASC
-       LIMIT 1`,
+  /** CH14/CH22: 일반 계획 카드가 가장 적은 플레이어(동률 전원)에게 1장 */
+  private async catchupPlan(gameId: string) {
+    const counts = await pool.query(
+      `SELECT ps.player_id, COUNT(c.id)::int AS n
+         FROM player_states ps
+         LEFT JOIN hands h ON h.player_state_id = ps.id
+         LEFT JOIN cards c ON c.id = h.card_id AND c.type = 'plan'
+        WHERE ps.game_id = $1
+        GROUP BY ps.player_id`,
       [gameId]
     );
-
-    if (result.rows.length > 0) {
-      const lowestPlayer = result.rows[0];
-      
-      await client.query(
-        'UPDATE player_states SET money = money + 2000 WHERE game_id = $1 AND player_id = $2',
-        [gameId, lowestPlayer.player_id]
-      );
-
-      return { 
-        type: 'catchup', 
-        action: 'money', 
-        targetPlayerId: lowestPlayer.player_id,
-        amount: 2000,
-        message: `TC가 가장 적은 플레이어에게 +2,000TC`
-      };
-    }
-
-    return { type: 'catchup', action: 'money', result: 'no_player' };
+    const min = Math.min(...counts.rows.map((r: any) => r.n));
+    const targets = counts.rows.filter((r: any) => r.n === min).map((r: any) => r.player_id);
+    return this.drawPlans(gameId, targets, 'catchup');
   }
 
-  // CH23, CH24: 추억 가장 낮은 사람에게 +2
-  private async catchupMemory(client: any, gameId: string) {
-    const result = await client.query(
-      `SELECT player_id, traits
-       FROM player_states
-       WHERE game_id = $1
-       ORDER BY (traits->>'memory')::int ASC NULLS FIRST
-       LIMIT 1`,
-      [gameId]
-    );
-
-    if (result.rows.length > 0) {
-      const lowestPlayer = result.rows[0];
-      
-      await client.query(
-        `UPDATE player_states 
-         SET traits = jsonb_set(
-           traits, 
-           '{memory}', 
-           to_jsonb(COALESCE((traits->>'memory')::int, 0) + 2)
-         )
-         WHERE game_id = $1 AND player_id = $2`,
-        [gameId, lowestPlayer.player_id]
-      );
-
-      return { 
-        type: 'catchup', 
-        action: 'memory', 
-        targetPlayerId: lowestPlayer.player_id,
-        amount: 2,
-        message: `추억이 가장 낮은 플레이어에게 추억 +2`
+  private async drawPlans(gameId: string, playerIds: string[], reason: string) {
+    return withTransaction(async (client) => {
+      const got: string[] = [];
+      for (const pid of playerIds) {
+        const card = await this.drawPlanInto(client, gameId, pid);
+        if (card) got.push(`${await this.nickname(client, pid)} "${card.name}"`);
+      }
+      return {
+        type: 'draw',
+        action: reason === 'CH15' ? 'draw_plan' : 'catchup_plan',
+        message: got.length ? `계획 카드 획득: ${got.join(', ')}` : '더 이상 뽑을 계획 카드가 없습니다',
       };
-    }
-
-    return { type: 'catchup', action: 'memory', result: 'no_player' };
-  }
-
-  // CH25: 동행 버디 - 본인 행동1회, 지목1명 행동1회
-  private async handleBuddyAction(gameId: string, requesterId: string): Promise<any> {
-    const interactionId = `${gameId}-${Date.now()}`;
-    
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.pendingInteractions.delete(interactionId);
-        reject(new Error('응답 시간 초과'));
-      }, 30000);
-
-      this.pendingInteractions.set(interactionId, {
-        gameId,
-        requesterId,
-        chanceCode: 'CH25',
-        timeout,
-        resolve,
-        reject
-      });
-
-      this.io?.to(gameId).emit('chance-request', {
-        interactionId,
-        type: 'buddy_action',
-        requesterId,
-        message: '동행 버디: 함께 행동할 플레이어를 선택하세요'
-      });
     });
   }
 
-  // 특수 행동 카드 처리
-  private async handleSpecialCard(client: any, gameId: string, playerId: string, action: string) {
-    switch (action) {
-      case 'repeat_current':
-        // CH19: 반전의 기회 - 이동 없이 현재 칸 행동 1회 추가
-        return await this.handleRepeatCurrentAction(client, gameId, playerId);
-      
-      case 'extra_action':
-        // CH18: 체력이 넘친다 - 이동 없이 행동 1회
-        return { type: 'special', action: 'extra_action', message: '이동 없이 행동 1회를 수행할 수 있습니다' };
-      
-      case 'joint_plan_support':
-        // CH20: 공동 목표 지원 - 공동 목표 기여 +3,000TC
-        return await this.handleJointPlanSupport(client, gameId, playerId);
-      
-      case 'draw_discarded':
-        // CH16: 버린만큼 뽑기 - 버린 카드 수만큼 계획 카드 드로우
-        return await this.handleDrawDiscarded(client, gameId, playerId);
-      
-      case 'select_joint_plan':
-        // CH17: 여행 팜플렛 - 공동 목표 카드 선택
-        return await this.handleSelectJointPlan(gameId, playerId);
-      
-      default:
-        return { type: 'special', action };
-    }
+  private async drawPlanInto(client: any, gameId: string, playerId: string) {
+    const state = await getPlayerState(client, gameId, playerId);
+    const card = await drawCard(client, gameId, 'plan');
+    if (!card) return null;
+    await client.query(
+      'INSERT INTO hands (player_state_id, card_id, seq) VALUES ($1, $2, (SELECT COALESCE(MAX(seq), -1) + 1 FROM hands WHERE player_state_id = $1))',
+      [state.id, card.id]
+    );
+    return card;
   }
 
-  // CH16: 버린만큼 뽑기 - 사용자가 버릴 카드 선택
-  private async handleDrawDiscarded(client: any, gameId: string, playerId: string) {
-    // 플레이어 상태 ID 조회
-    const stateResult = await client.query(
-      'SELECT id FROM player_states WHERE game_id = $1 AND player_id = $2',
-      [gameId, playerId]
-    );
-    const playerStateId = stateResult.rows[0].id;
+  // CH16: 버린만큼 뽑기 ---------------------------------------------------------
 
-    // 손패 조회 (무료계획 + 계획 카드)
-    const handResult = await client.query(
-      `SELECT h.id as hand_id, h.card_id, c.name, c.type, c.code
-       FROM hands h
-       JOIN cards c ON h.card_id = c.id
-       WHERE h.player_state_id = $1 AND c.type IN ('plan', 'freeplan')
-       ORDER BY h.seq`,
-      [playerStateId]
+  private async startDiscardAndDraw(gameId: string, playerId: string) {
+    const state = await getPlayerState(pool, gameId, playerId);
+    const hand = await pool.query(
+      `SELECT h.id AS hand_id, h.card_id, c.id, c.name, c.code, c.cost, c.effects, c.type
+         FROM hands h JOIN cards c ON c.id = h.card_id
+        WHERE h.player_state_id = $1 AND c.type = 'plan' ORDER BY h.seq`,
+      [state.id]
     );
-
-    if (handResult.rows.length === 0) {
-      return {
-        type: 'special',
-        action: 'select_discard',
-        requiresSelection: false,
-        handCards: [],
-        message: '버릴 수 있는 카드가 없습니다'
-      };
+    if (hand.rows.length === 0) {
+      return { type: 'special', action: 'select_discard', requiresSelection: false, message: '버릴 계획 카드가 없습니다' };
     }
-
-    // 프론트엔드에서 선택하도록 손패 정보 반환
+    this.pendingDiscard.set(gameId, playerId);
+    if (await isAIPlayer(pool, playerId)) {
+      const { aiPlayerService } = await import('./AIPlayerService');
+      const cardIds = await aiPlayerService.chooseDiscards(gameId, playerId);
+      return { type: 'special', action: 'draw_discarded', ...(await this.executeDiscardAndDraw(gameId, playerId, cardIds)) };
+    }
     return {
       type: 'special',
       action: 'select_discard',
       requiresSelection: true,
-      handCards: handResult.rows,
-      message: '버릴 카드를 선택하세요 (버린 만큼 계획 카드를 뽑습니다)'
+      handCards: hand.rows,
+      message: '버릴 계획 카드를 고르세요. 버린 수만큼 새로 뽑습니다',
     };
   }
 
-  // CH16 실행: 선택한 카드 버리고 계획 카드 드로우
   async executeDiscardAndDraw(gameId: string, playerId: string, cardIds: string[]): Promise<any> {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
+    if (this.pendingDiscard.get(gameId) !== playerId) throw new Error('버린만큼 뽑기 효과가 없습니다');
+    this.pendingDiscard.delete(gameId);
 
-      const stateResult = await client.query(
-        'SELECT id FROM player_states WHERE game_id = $1 AND player_id = $2',
-        [gameId, playerId]
-      );
-      const playerStateId = stateResult.rows[0].id;
-
-      // 선택한 카드들을 버림
+    return withTransaction(async (client) => {
+      const state = await getPlayerState(client, gameId, playerId);
+      let discarded = 0;
       for (const cardId of cardIds) {
-        // 손패에서 제거
-        await client.query(
-          'DELETE FROM hands WHERE player_state_id = $1 AND card_id = $2',
-          [playerStateId, cardId]
+        const removed = await client.query(
+          'DELETE FROM hands WHERE player_state_id = $1 AND card_id = $2 RETURNING id',
+          [state.id, cardId]
         );
-
-        // 버린 카드 테이블에 추가
-        await client.query(
-          'INSERT INTO discarded_cards (game_id, player_state_id, card_id) VALUES ($1, $2, $3)',
-          [gameId, playerStateId, cardId]
-        );
+        if (removed.rows.length === 0) continue;
+        discarded++;
       }
-
-      // 버린 카드 수만큼 계획 카드 드로우
-      const drawnCards = [];
-      for (let i = 0; i < cardIds.length; i++) {
-        const result = await this.drawPlan(client, gameId, playerId);
-        if (result.cardId) {
-          drawnCards.push(result.cardId);
-        }
+      const drawn: string[] = [];
+      for (let i = 0; i < discarded; i++) {
+        const card = await this.drawPlanInto(client, gameId, playerId);
+        if (card) drawn.push(card.name);
       }
-
-      await client.query('COMMIT');
-
-      console.log(`🎴 CH16: ${cardIds.length}장 버리고 ${drawnCards.length}장 드로우`);
-
       return {
-        type: 'special',
-        action: 'draw_discarded',
-        discardedCount: cardIds.length,
-        drawnCount: drawnCards.length,
-        cards: drawnCards,
-        message: `${cardIds.length}장을 버리고 계획 카드 ${drawnCards.length}장을 획득했습니다!`
+        discardedCount: discarded,
+        drawnCount: drawn.length,
+        message: `${discarded}장을 버리고 ${drawn.length}장을 새로 뽑았습니다${drawn.length ? `: ${drawn.join(', ')}` : ''}`,
       };
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
-
-  // CH17: 여행 팜플렛 - 공동 목표 카드 선택
-  private async handleSelectJointPlan(gameId: string, playerId: string): Promise<any> {
-    const interactionId = `${gameId}-${Date.now()}`;
-    
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.pendingInteractions.delete(interactionId);
-        reject(new Error('응답 시간 초과'));
-      }, 60000); // 60초
-
-      this.pendingInteractions.set(interactionId, {
-        gameId,
-        requesterId: playerId,
-        chanceCode: 'CH17',
-        timeout,
-        resolve,
-        reject
-      });
-
-      this.io?.to(gameId).emit('chance-request', {
-        interactionId,
-        type: 'select_joint_plan',
-        requesterId: playerId,
-        message: '공동 목표 카드를 선택하세요'
-      });
     });
   }
 
-  // CH20: 공동 목표 지원
-  private async handleJointPlanSupport(client: any, gameId: string, playerId: string) {
-    // 플레이어 상태 ID 조회
-    const stateResult = await client.query(
-      'SELECT id, money FROM player_states WHERE game_id = $1 AND player_id = $2',
-      [gameId, playerId]
-    );
-    
-    if (stateResult.rows.length === 0) {
-      throw new Error('플레이어를 찾을 수 없습니다');
-    }
-    
-    const playerStateId = stateResult.rows[0].id;
-    const currentMoney = stateResult.rows[0].money;
-    
-    // 돈이 부족한 경우 체크
-    if (currentMoney < 3000) {
-      return {
-        type: 'special',
-        action: 'joint_plan_support',
-        amount: 0,
-        message: '공동 목표 지원에 필요한 돈이 부족합니다 (3,000TC 필요)'
-      };
-    }
-    
-    // 플레이어 돈 차감
-    await client.query(
-      'UPDATE player_states SET money = money - 3000 WHERE id = $1',
-      [playerStateId]
-    );
-    
-    // 공동 목표 기여 테이블에 3,000TC 추가
-    await client.query(
-      'INSERT INTO joint_plan_contributions (game_id, player_state_id, amount) VALUES ($1, $2, 3000)',
-      [gameId, playerStateId]
-    );
-    
-    console.log(`✅ 공동 목표 지원: playerId=${playerId}, 3,000TC 기여`);
+  // CH17: 여행 팜플렛 -----------------------------------------------------------
 
+  private async startJointPlanChoice(gameId: string, playerId: string) {
+    const { current, drawn } = await withTransaction(async (client) => {
+      const game = await client.query('SELECT joint_plan_card_id FROM games WHERE id = $1', [gameId]);
+      const card = await drawCard(client, gameId, 'joint');
+      return { current: game.rows[0].joint_plan_card_id as string, drawn: card };
+    });
+    if (!drawn) {
+      return { type: 'special', action: 'select_joint_plan', requiresSelection: false, message: '더 볼 공동 목표 카드가 없습니다' };
+    }
+
+    const options = [current, drawn.id];
+    this.pendingJointChoice.set(gameId, { playerId, options });
+    if (await isAIPlayer(pool, playerId)) {
+      const { aiPlayerService } = await import('./AIPlayerService');
+      const pick = await aiPlayerService.chooseJointPlan(gameId, playerId, options);
+      const selected = await this.selectJointPlan(gameId, playerId, pick);
+      return { type: 'special', action: 'joint_plan_selected', message: `공동 목표: "${selected.name}"` };
+    }
+    const cards = await pool.query('SELECT id, code, name, cost, effects, metadata FROM cards WHERE id = ANY($1)', [options]);
     return {
       type: 'special',
-      action: 'joint_plan_support',
-      amount: 3000,
-      message: '공동 목표에 3,000TC를 기여했습니다! (잔액에서 차감됨)'
+      action: 'select_joint_plan',
+      requiresSelection: true,
+      options: cards.rows,
+      message: '공동 목표 카드를 1장 더 봤습니다. 둘 중 하나를 고르세요',
     };
   }
 
-  // CH19: 반전의 기회 - 현재 칸 행동 반복
-  private async handleRepeatCurrentAction(client: any, gameId: string, playerId: string) {
-    const positionResult = await client.query(
-      'SELECT position FROM player_states WHERE game_id = $1 AND player_id = $2',
-      [gameId, playerId]
-    );
-    
-    const currentPosition = positionResult.rows[0].position;
-    
-    return { 
-      type: 'special', 
-      action: 'repeat_current', 
-      position: currentPosition,
-      message: `현재 위치(${currentPosition}번)에서 행동을 1회 더 수행할 수 있습니다`
-    };
-  }
+  async selectJointPlan(gameId: string, playerId: string | undefined, cardId: string): Promise<any> {
+    const pending = this.pendingJointChoice.get(gameId);
+    if (!pending || (playerId && pending.playerId !== playerId)) throw new Error('공동 목표를 고를 수 있는 상태가 아닙니다');
+    if (!pending.options.includes(cardId)) throw new Error('보여준 두 장 중에서만 고를 수 있습니다');
+    this.pendingJointChoice.delete(gameId);
 
-  // 기존 respondToInteraction, executeSharedHouse, executeSharedInvest는 하단의 새 버전으로 대체됨
-
-  // 실제 구매 실행
-  private async executePurchase(client: any, gameId: string, buyerId: string, sellerId: string, cardId: string) {
-    // 구매자 돈 차감
-    await client.query(
-      'UPDATE player_states SET money = money - 1000 WHERE game_id = $1 AND player_id = $2',
-      [gameId, buyerId]
-    );
-
-    // 판매자 돈 증가
-    await client.query(
-      'UPDATE player_states SET money = money + 1000 WHERE game_id = $1 AND player_id = $2',
-      [gameId, sellerId]
-    );
-
-    // 카드 소유권 이전
-    const sellerStateResult = await client.query(
-      'SELECT id FROM player_states WHERE game_id = $1 AND player_id = $2',
-      [gameId, sellerId]
-    );
-    const buyerStateResult = await client.query(
-      'SELECT id FROM player_states WHERE game_id = $1 AND player_id = $2',
-      [gameId, buyerId]
-    );
-
-    await client.query(
-      'UPDATE hands SET player_state_id = $1 WHERE player_state_id = $2 AND card_id = $3',
-      [buyerStateResult.rows[0].id, sellerStateResult.rows[0].id, cardId]
-    );
-  }
-
-  // 카드 교환 실행
-  private async executeCardExchange(client: any, gameId: string, player1Id: string, player2Id: string, card1Id: string, card2Id: string) {
-    const state1Result = await client.query(
-      'SELECT id FROM player_states WHERE game_id = $1 AND player_id = $2',
-      [gameId, player1Id]
-    );
-    const state2Result = await client.query(
-      'SELECT id FROM player_states WHERE game_id = $1 AND player_id = $2',
-      [gameId, player2Id]
-    );
-
-    const state1Id = state1Result.rows[0].id;
-    const state2Id = state2Result.rows[0].id;
-
-    // 카드 교환
-    await client.query(
-      'UPDATE hands SET player_state_id = $1 WHERE player_state_id = $2 AND card_id = $3',
-      [state2Id, state1Id, card1Id]
-    );
-    await client.query(
-      'UPDATE hands SET player_state_id = $1 WHERE player_state_id = $2 AND card_id = $3',
-      [state1Id, state2Id, card2Id]
-    );
-  }
-
-  // 위치 교환 실행 (기존 버전 - 하단의 새 버전으로 대체됨)
-
-  private async drawPlan(client: any, gameId: string, playerId: string) {
-    const deckResult = await client.query(
-      'SELECT card_order FROM decks WHERE game_id = $1 AND type = $2',
-      [gameId, 'plan']
-    );
-    
-    let cardOrder = JSON.parse(deckResult.rows[0].card_order);
-    
-    // 덱이 비었으면 재충전 시도
-    if (cardOrder.length === 0) {
-      console.log('⚠️ Plan 덱이 비었습니다. 재충전 시도...');
-      cardOrder = await this.refillDeck(client, gameId, 'plan');
-      
-      if (cardOrder.length === 0) {
-        console.log('❌ Plan 덱 완전 소진');
-        return { type: 'draw', result: 'deck_empty', message: '더 이상 뽑을 카드가 없습니다' };
-      }
-    }
-    
-    const cardId = cardOrder.shift();
-    
-    await client.query(
-      'UPDATE decks SET card_order = $1 WHERE game_id = $2 AND type = $3',
-      [JSON.stringify(cardOrder), gameId, 'plan']
-    );
-
-    const stateResult = await client.query(
-      'SELECT id FROM player_states WHERE game_id = $1 AND player_id = $2',
-      [gameId, playerId]
-    );
-
-    const seqResult = await client.query(
-      'SELECT COALESCE(MAX(seq), -1) + 1 as next_seq FROM hands WHERE player_state_id = $1',
-      [stateResult.rows[0].id]
-    );
-
-    await client.query(
-      'INSERT INTO hands (player_state_id, card_id, seq) VALUES ($1, $2, $3)',
-      [stateResult.rows[0].id, cardId, seqResult.rows[0].next_seq]
-    );
-
-    return { type: 'draw', cardId };
-  }
-
-  // 덱 재충전 (버린 카드 더미 섞기)
-  private async refillDeck(client: any, gameId: string, deckType: string): Promise<any[]> {
-    // 버린 카드 더미 조회 (구매되지 않은 카드들)
-    const discardedResult = await client.query(
-      `SELECT c.id FROM cards c
-       WHERE c.type = $1
-       AND NOT EXISTS (
-         SELECT 1 FROM hands h
-         JOIN player_states ps ON h.player_state_id = ps.id
-         WHERE ps.game_id = $2 AND h.card_id = c.id
-       )
-       AND NOT EXISTS (
-         SELECT 1 FROM purchased p
-         JOIN player_states ps ON p.player_state_id = ps.id
-         WHERE ps.game_id = $2 AND p.card_id = c.id
-       )`,
-      [deckType, gameId]
-    );
-
-    if (discardedResult.rows.length === 0) {
-      return [];
-    }
-
-    // 카드 ID 배열 생성 및 섞기
-    const cardIds = discardedResult.rows.map((row: any) => row.id);
-    const shuffled = this.shuffleArray(cardIds);
-
-    // 덱 업데이트
-    await client.query(
-      'UPDATE decks SET card_order = $1 WHERE game_id = $2 AND type = $3',
-      [JSON.stringify(shuffled), gameId, deckType]
-    );
-
-    console.log(`✅ ${deckType} 덱 재충전 완료: ${shuffled.length}장`);
-    return shuffled;
-  }
-
-  // 배열 섞기 (Fisher-Yates)
-  private shuffleArray(array: any[]): any[] {
-    const shuffled = [...array];
-    for (let i = shuffled.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-    }
-    return shuffled;
-  }
-
-  private async drawPlanForLowest(client: any, gameId: string) {
-    // 계획 카드 최저 플레이어 찾기
-    const result = await client.query(
-      `SELECT ps.id, ps.player_id, COUNT(h.id) as card_count
-       FROM player_states ps
-       LEFT JOIN hands h ON ps.id = h.player_state_id
-       WHERE ps.game_id = $1
-       GROUP BY ps.id, ps.player_id
-       ORDER BY card_count ASC
-       LIMIT 1`,
-      [gameId]
-    );
-
-    if (result.rows.length > 0) {
-      const lowestPlayer = result.rows[0];
-      return await this.drawPlan(client, gameId, lowestPlayer.player_id);
-    }
-
-    return { type: 'draw', action: 'catchup_plan', result: 'no_player' };
-  }
-
-  // AI 플레이어 확인
-  private async isAIPlayer(playerId: string): Promise<boolean> {
-    const result = await pool.query(
-      `SELECT p.is_ai FROM players p WHERE p.id = $1`,
-      [playerId]
-    );
-    return result.rows[0]?.is_ai || false;
-  }
-
-  // 랜덤 플레이어 선택 (자신 제외)
-  private async selectRandomPlayer(gameId: string, excludePlayerId: string): Promise<string> {
-    const result = await pool.query(
-      `SELECT ps.player_id 
-       FROM player_states ps 
-       WHERE ps.game_id = $1 AND ps.player_id != $2`,
-      [gameId, excludePlayerId]
-    );
-    
-    if (result.rows.length === 0) {
-      throw new Error('선택 가능한 플레이어가 없습니다');
-    }
-    
-    const randomIndex = Math.floor(Math.random() * result.rows.length);
-    return result.rows[randomIndex].player_id;
-  }
-
-  // CH8 실행: 친구랑 같이 집안일
-  private async executeSharedHouse(gameId: string, requesterId: string, targetId: string, accepted: boolean): Promise<any> {
-    if (!accepted) {
-      return { type: 'interaction', action: 'shared_house', accepted: false };
-    }
-
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-
-      // 집안일 카드 드로우 (요청자)
-      const requesterCard = await this.drawHouseCard(client, gameId, requesterId);
-      
-      // 집안일 카드 드로우 (대상자)
-      const targetCard = await this.drawHouseCard(client, gameId, targetId);
-
-      await client.query('COMMIT');
-
-      return {
-        type: 'interaction',
-        action: 'shared_house',
-        accepted: true,
-        requesterCard,
-        targetCard
-      };
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
-
-  // CH9 실행: 공동 투자
-  private async executeSharedInvest(gameId: string, requesterId: string, targetId: string, accepted: boolean): Promise<any> {
-    if (!accepted) {
-      return { type: 'interaction', action: 'shared_invest', accepted: false };
-    }
-
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-
-      // 각자 1,000TC 지불
-      await client.query(
-        `UPDATE player_states 
-         SET money = money - 1000 
-         WHERE game_id = $1 AND player_id IN ($2, $3)`,
-        [gameId, requesterId, targetId]
-      );
-
-      // 계획 카드 1장씩 드로우
-      const requesterCard = await this.drawPlan(client, gameId, requesterId);
-      const targetCard = await this.drawPlan(client, gameId, targetId);
-
-      await client.query('COMMIT');
-
-      return {
-        type: 'interaction',
-        action: 'shared_invest',
-        accepted: true,
-        requesterCard,
-        targetCard
-      };
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
-
-  // 집안일 카드 드로우
-  private async drawHouseCard(client: any, gameId: string, playerId: string): Promise<any> {
-    // 덱에서 카드 드로우
-    const deckResult = await client.query(
-      'SELECT card_order FROM decks WHERE game_id = $1 AND type = $2',
-      [gameId, 'house']
-    );
-
-    if (deckResult.rows.length === 0) {
-      throw new Error('집안일 덱을 찾을 수 없습니다');
-    }
-
-    let cardOrder = deckResult.rows[0].card_order;
-    if (typeof cardOrder === 'string') {
-      cardOrder = JSON.parse(cardOrder);
-    }
-
-    if (cardOrder.length === 0) {
-      throw new Error('집안일 카드가 부족합니다');
-    }
-
-    const cardId = cardOrder.shift();
-
-    // 덱 업데이트
-    await client.query(
-      'UPDATE decks SET card_order = $1 WHERE game_id = $2 AND type = $3',
-      [JSON.stringify(cardOrder), gameId, 'house']
-    );
-
-    // 카드 정보 조회
-    const cardResult = await client.query('SELECT * FROM cards WHERE id = $1', [cardId]);
-    const card = cardResult.rows[0];
-
-    // 효과 적용 (돈, 추억)
-    let effects = card.effects;
-    if (typeof effects === 'string') {
-      effects = JSON.parse(effects);
-    }
-
-    if (effects.money) {
-      await client.query(
-        `UPDATE player_states 
-         SET money = money + $1 
-         WHERE game_id = $2 AND player_id = $3`,
-        [effects.money, gameId, playerId]
-      );
-    }
-
-    if (effects.memory) {
-      await client.query(
-        `UPDATE player_states 
-         SET traits = jsonb_set(traits, '{memory}', to_jsonb((COALESCE((traits->>'memory')::int, 0) + $1)::int))
-         WHERE game_id = $2 AND player_id = $3`,
-        [effects.memory, gameId, playerId]
-      );
-    }
-
+    const card = await withTransaction(async (client) => {
+      await client.query('UPDATE games SET joint_plan_card_id = $1 WHERE id = $2', [cardId, gameId]);
+      const other = pending.options.filter((id) => id !== cardId);
+      await returnToDeckBottom(client, gameId, 'joint', other);
+      return (await client.query('SELECT * FROM cards WHERE id = $1', [cardId])).rows[0];
+    });
+    const roomId = await getRoomId(gameId);
+    if (roomId) this.io?.to(roomId).emit('joint-plan-selected', { gameId, card });
     return card;
   }
 
-  // 상호작용 응답 처리
-  async respondToInteraction(interactionId: string, response: any): Promise<void> {
-    const interaction = this.pendingInteractions.get(interactionId);
-    
-    if (!interaction) {
-      throw new Error('상호작용을 찾을 수 없습니다');
-    }
+  // ---------------------------------------------------------------------------
+  // helpers
+  // ---------------------------------------------------------------------------
 
-    clearTimeout(interaction.timeout);
-    this.pendingInteractions.delete(interactionId);
-
-    // 응답 처리
-    switch (interaction.chanceCode) {
-      case 'CH8':
-        const ch8Result = await this.executeSharedHouse(
-          interaction.gameId,
-          interaction.requesterId,
-          response.targetId,
-          response.accepted
-        );
-        interaction.resolve(ch8Result);
-        break;
-
-      case 'CH9':
-        const ch9Result = await this.executeSharedInvest(
-          interaction.gameId,
-          interaction.requesterId,
-          response.targetId,
-          response.accepted
-        );
-        interaction.resolve(ch9Result);
-        break;
-
-      case 'CH10':
-        // 계획 구매 요청 처리
-        interaction.resolve({ accepted: response.accepted, cardId: response.cardId });
-        break;
-
-      case 'CH11':
-        // 계획 교환 처리
-        interaction.resolve({ accepted: response.accepted, cardId: response.cardId });
-        break;
-
-      case 'CH13':
-        // 위치 교환 처리
-        const swapResult = await this.executeSwapPosition(interaction.gameId, interaction.requesterId, response.targetId);
-        interaction.resolve(swapResult);
-        break;
-
-      default:
-        interaction.reject(new Error('알 수 없는 상호작용입니다'));
-    }
-
-    // 완료 알림
-    if (this.io) {
-      this.io.to(interaction.gameId).emit('chance-resolved', {
-        interactionId,
-        chanceCode: interaction.chanceCode,
-        response
-      });
-    }
+  private async addMoney(client: any, gameId: string, playerId: string, amount: number) {
+    await client.query('UPDATE player_states SET money = money + $1 WHERE game_id = $2 AND player_id = $3', [
+      amount,
+      gameId,
+      playerId,
+    ]);
   }
 
-  // CH13 실행: 위치 교환 + 추가 행동
-  private async executeSwapPosition(gameId: string, requesterId: string, targetId: string): Promise<any> {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
+  private async addTraits(client: any, playerStateId: string, effects: Record<string, number>) {
+    const row = await client.query('SELECT traits FROM player_states WHERE id = $1 FOR UPDATE', [playerStateId]);
+    const traits = addEffects(parseJSON<Traits>(row.rows[0].traits, {}), effects);
+    await client.query('UPDATE player_states SET traits = $1 WHERE id = $2', [JSON.stringify(traits), playerStateId]);
+  }
 
-      // 두 플레이어의 위치 조회
-      const positionsResult = await client.query(
-        `SELECT player_id, position 
-         FROM player_states 
-         WHERE game_id = $1 AND player_id IN ($2, $3)`,
-        [gameId, requesterId, targetId]
-      );
+  private async lowestBy(client: any, gameId: string, key: 'money' | 'memory') {
+    const expr = key === 'money' ? 'money' : `COALESCE((traits->>'memory')::int, 0)`;
+    const result = await client.query(`SELECT id, player_id, ${expr} AS v FROM player_states WHERE game_id = $1`, [
+      gameId,
+    ]);
+    const min = Math.min(...result.rows.map((r: any) => Number(r.v)));
+    return result.rows.filter((r: any) => Number(r.v) === min) as Array<{ id: string; player_id: string }>;
+  }
 
-      const requesterPos = positionsResult.rows.find((r: any) => r.player_id === requesterId)?.position;
-      const targetPos = positionsResult.rows.find((r: any) => r.player_id === targetId)?.position;
+  private async nickname(client: any, playerId: string): Promise<string> {
+    const r = await client.query('SELECT u.nickname FROM players p JOIN users u ON u.id = p.user_id WHERE p.id = $1', [
+      playerId,
+    ]);
+    return r.rows[0]?.nickname || '플레이어';
+  }
 
-      // 위치 교환
-      await client.query(
-        'UPDATE player_states SET position = $1 WHERE game_id = $2 AND player_id = $3',
-        [targetPos, gameId, requesterId]
-      );
-
-      await client.query(
-        'UPDATE player_states SET position = $1 WHERE game_id = $2 AND player_id = $3',
-        [requesterPos, gameId, targetId]
-      );
-
-      await client.query('COMMIT');
-
-      console.log(`🔄 CH13: 위치 교환 완료 - ${requesterId}(${requesterPos}→${targetPos}), ${targetId}(${targetPos}→${requesterPos})`);
-
-      return {
-        type: 'interaction',
-        action: 'swap_position',
-        requesterOldPos: requesterPos,
-        requesterNewPos: targetPos,
-        targetOldPos: targetPos,
-        targetNewPos: requesterPos,
-        extraAction: true, // 추가 행동 가능 플래그
-        message: `위치를 교환했습니다! ${targetPos}번 칸에서 행동을 1회 더 수행할 수 있습니다.`
-      };
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
+  private async names(client: any, players: Array<{ player_id: string }>): Promise<string> {
+    const names = [];
+    for (const p of players) names.push(await this.nickname(client, p.player_id));
+    return names.join(', ');
   }
 }
 

@@ -87,23 +87,8 @@ router.post('/rooms/:roomId/start', async (req, res) => {
       
       // 첫 플레이어가 AI인 경우 즉시 턴 실행
       if (isFirstPlayerAI) {
-        console.log('🤖 첫 플레이어가 AI, 즉시 턴 실행 예약');
         const { aiScheduler } = await import('../services/AIScheduler');
-        aiScheduler.markGameAsExecuting(gameId);
-        
-        // 비동기로 AI 턴 실행 (응답 지연 방지)
-        setImmediate(async () => {
-          try {
-            const { aiPlayerService } = await import('../services/AIPlayerService');
-            console.log('🤖 첫 AI 턴 실행 시작');
-            await aiPlayerService.executeTurn(gameId, firstPlayerId);
-            console.log('✅ 첫 AI 턴 실행 완료');
-          } catch (error) {
-            console.error('❌ 첫 AI 턴 실행 실패:', error);
-          } finally {
-            aiScheduler.unmarkGameAsExecuting(gameId);
-          }
-        });
+        aiScheduler.kick(gameId);
       }
     } finally {
       client.release();

@@ -1,875 +1,412 @@
 import { pool } from '../db/pool';
 import { Server } from 'socket.io';
+import {
+  ADJACENCY,
+  bestPurchase,
+  cardPoints,
+  MAX_RESOLVE_TOKENS,
+  Multipliers,
+  multipliersFromTravelCard,
+  parseJSON,
+  RESOLVE_RECOVERY_DAY,
+  scorePlayer,
+  TOTAL_DAYS,
+  Traits,
+} from '../game/rules';
+import { getTurnInfo, getRoomId } from './TurnState';
+import type { ChanceChoice, ChoiceType } from './ChanceService';
 
 /**
- * AI 플레이어 게임플레이 알고리즘
- * 
- * 전략:
- * 1. 여행지 테마에 맞춰 특성 집중 (x3 > x2 > x1 우선순위)
- * 2. 1-7턴: 결심 토큰 1개 사용
- * 3. 8-14턴: 결심 토큰 1개 사용
- * 4. 공동 계획: 3,000~9,000TC 기여 (500 단위)
- * 5. 찬스 카드: 상황에 맞게 대응
+ * NPC(AI) 전략
+ *
+ * 사람과 똑같이 TurnService(이동/행동/추가 행동)를 통해서만 플레이한다.
+ * 각 행동의 기대 가치(점수 단위)를 계산해 가장 좋은 칸으로 이동한다.
+ *
+ *  - 점수 가치: 카드 효과 × 내 여행지 가중치 (+추억)
+ *  - TC 가치 λ: 손패 중 예산이 모자라 못 사는 카드의 '점수/TC' 효율
+ *    (돈이 넉넉하면 λ가 낮아져 계획 카드 수집 쪽으로, 부족하면 집안일/지원 쪽으로 기운다)
+ *  - 덱 기대값: 남은 덱 카드들의 평균 효과로 계산 (카드 카운팅)
+ *  - 1칸 앞을 내다보는 탐색: 이동할 칸 가치 + 0.35 × 다음 턴 최선의 칸 가치
+ *  - 결심 토큰: 1~6일차에는 아껴 7일차 회복(+1)을 받고, 이후 가치가 큰 턴에 사용
+ *  - 최종 구매: 0/1 배낭 최적화, 남는 TC는 공동 목표에 기여 (3인 이상은 최소 기여 패널티 회피)
  */
+
+interface CardRow {
+  id: string;
+  code: string;
+  name: string;
+  type: string;
+  cost: number;
+  effects: Record<string, number>;
+  metadata: any;
+}
+
+interface Context {
+  gameId: string;
+  playerId: string;
+  day: number;
+  playerCount: number;
+  state: any;
+  multipliers: Multipliers;
+  hand: CardRow[];
+  decks: Record<string, CardRow[]>;
+  lambda: number;
+  houseVisited: boolean;
+  tokenUsedEarly: boolean;
+}
+
+const LOOKAHEAD = 0.35;
+const TOKEN_USE_THRESHOLD = 3;
+
 export class AIPlayerService {
   private io: Server | null = null;
+  private cardCache: Map<string, CardRow> | null = null;
 
   setSocketIO(io: Server) {
     this.io = io;
   }
-  
-  /**
-   * AI 턴 실행
-   */
+
+  /** AI 턴 1회 실행: 이동 → 행동 → (추가 행동) → 턴 종료 */
   async executeTurn(gameId: string, playerId: string): Promise<void> {
-    const startTime = Date.now(); // ⏱️ 시작 시간
-    console.log(`⏱️ AI 턴 시작: playerId=${playerId}`);
-    
-    try {
-      // 1. 게임 상태 조회 (읽기 전용)
-      const stateStartTime = Date.now();
-      const client = await pool.connect();
-      let gameState;
-      try {
-        gameState = await this.getGameState(client, gameId, playerId);
-      } finally {
-        client.release();
+    const { turnService } = await import('./TurnService');
+    const { turnManager } = await import('./TurnManager');
+
+    let ctx = await this.loadContext(gameId, playerId);
+
+    if (!ctx.state.forced_move) {
+      const target = this.chooseMove(ctx);
+      await turnService.move(gameId, playerId, target);
+      ctx.state.position = target;
+    }
+
+    const action = ctx.state.position === 6 ? this.bestAction(ctx, [1, 2, 3, 4, 5]) : ctx.state.position;
+    const option = action === 5 && ctx.playerCount === 2 ? this.twoPlayerChanceOption(ctx) : undefined;
+    await turnService.performAction(gameId, playerId, action, option);
+
+    // 찬스 카드로 얻은 추가 행동, 결심 토큰 사용
+    for (let guard = 0; guard < 5; guard++) {
+      ctx = await this.loadContext(gameId, playerId);
+      const info = await getTurnInfo(pool, ctx.state.id);
+      const credit = info.pendingCredits[0];
+      if (credit) {
+        const candidates = credit.fixedAction
+          ? [credit.fixedAction]
+          : [1, 2, 3, 4, 5].filter((a) => credit.allowRepeat || a !== info.lastAction);
+        const extra = this.bestAction(ctx, candidates);
+        const extraOption = extra === 5 && ctx.playerCount === 2 ? this.twoPlayerChanceOption(ctx) : undefined;
+        await turnService.performAction(gameId, playerId, extra, extraOption);
+        continue;
       }
-      console.log(`  ⏱️ 상태 조회: ${Date.now() - stateStartTime}ms`);
-      
-      // 2. 이동 결정
-      const decideStartTime = Date.now();
-      const targetPosition = await this.decideMove(gameState);
-      console.log(`🤖 AI 이동 결정: ${gameState.playerState.position} → ${targetPosition} (${Date.now() - decideStartTime}ms)`);
-      
-      // 3. 이동 실행 (짧은 트랜잭션)
-      const moveStartTime = Date.now();
-      await this.moveWithTransaction(gameId, playerId, targetPosition);
-      console.log(`  ⏱️ 이동 실행: ${Date.now() - moveStartTime}ms`);
-
-      // 4. 행동 결정 및 실행 (짧은 트랜잭션)
-      const action = targetPosition;
-      const actionStartTime = Date.now();
-      console.log(`🤖 AI 행동 결정: ${action}번 (위치 ${targetPosition})`);
-      await this.performActionWithTransaction(gameId, playerId, action);
-      console.log(`  ⏱️ 행동 실행: ${Date.now() - actionStartTime}ms`);
-
-      console.log(`✅ AI 행동 완료`);
-      
-      // WebSocket으로 상태 업데이트 알림
-      const broadcastStartTime = Date.now();
-      await this.broadcastGameState(gameId);
-      console.log(`  ⏱️ 상태 브로드캐스트: ${Date.now() - broadcastStartTime}ms`);
-
-      // 5. 결심 토큰 사용 결정
-      const tokenStartTime = Date.now();
-      const shouldUseToken = await this.shouldUseResolveTokenNow(gameId, playerId);
-      
-      if (shouldUseToken) {
-        console.log(`🔥 AI 결심 토큰 사용 결정`);
-        await this.useResolveToken(gameId, playerId);
-        // 결심 토큰 사용 후 상태 업데이트 브로드캐스트
-        await this.broadcastGameState(gameId);
-        console.log(`  ⏱️ 결심 토큰 사용: ${Date.now() - tokenStartTime}ms`);
+      const extraCandidates = [1, 2, 3, 4, 5].filter((a) => a !== info.lastAction);
+      if (this.shouldUseResolveToken(ctx, extraCandidates)) {
+        await turnService.useResolveToken(gameId, playerId);
+        continue;
       }
+      break;
+    }
 
-      // 6. 14일차 공동 계획 기여 (턴 종료 전)
-      if (gameState.day === 14) {
-        const contributeStartTime = Date.now();
-        const contribution = await this.decideJointPlanContribution(gameId, playerId);
-        if (contribution > 0) {
-          console.log(`💰 AI 공동 계획 기여: ${contribution}TC`);
-          const { jointPlanService } = await import('./JointPlanService');
-          await jointPlanService.contribute(gameId, playerId, contribution);
-          await this.broadcastGameState(gameId);
-        }
-        console.log(`  ⏱️ 공동 계획 기여: ${Date.now() - contributeStartTime}ms`);
-      }
+    await turnManager.endTurn(gameId, playerId);
+  }
 
-      // 7. 턴 종료
-      const endTurnStartTime = Date.now();
-      console.log(`🤖 AI 턴 종료 중...`);
-      const { turnManager } = await import('./TurnManager');
-      const endResult = await turnManager.endTurn(gameId, playerId);
-      console.log(`  ⏱️ 턴 종료: ${Date.now() - endTurnStartTime}ms`);
-      
-      const totalTime = Date.now() - startTime;
-      console.log(`✅ AI 턴 완료 - 총 소요 시간: ${totalTime}ms (${(totalTime / 1000).toFixed(2)}초)`);
-      
-      // 다음 플레이어도 AI면 연속 실행 (중복 방지)
-      if (endResult.isAI && endResult.nextPlayerId && !endResult.isGameEnd) {
-        const { aiScheduler } = await import('./AIScheduler');
-        
-        // 이미 실행 중이면 스킵 (gameRoutes에서 이미 실행 중)
-        if (aiScheduler.isGameExecuting(gameId)) {
-          console.log(`⚠️ 다음 AI 턴 이미 실행 중, 연속 실행 스킵: ${endResult.nextPlayerId}`);
-        } else {
-          console.log(`🔄 다음 플레이어도 AI, 연속 실행: ${endResult.nextPlayerId}`);
-          // 잠시 대기 후 다음 AI 턴 실행
-          await this.delay(1500);
-          await this.executeTurn(gameId, endResult.nextPlayerId);
-        }
-      }
-      
-    } catch (error: any) {
-      const totalTime = Date.now() - startTime;
-      console.error(`❌ AI 턴 실패 - 소요 시간: ${totalTime}ms (${(totalTime / 1000).toFixed(2)}초)`);
+  // ---------------------------------------------------------------------------
+  // 의사결정
+  // ---------------------------------------------------------------------------
 
-      console.error('❌ AI 턴 실행 중 에러:', error);
-      
-      // 치명적 에러 시 게임 중지
-      const isCriticalError = 
-        error?.code === 'XX000' || 
-        error?.message?.includes('DbHandler exited') ||
-        error?.message?.includes('턴 카운트 오류') ||
-        error?.code === '57014' || // statement timeout
-        error?.message?.includes('Query read timeout');
-      
-      if (isCriticalError) {
-        console.error(`🛑 치명적 에러 발생, 게임 ${gameId} 중지`);
-        const { aiScheduler } = await import('./AIScheduler');
-        aiScheduler.stopGame(gameId);
+  private chooseMove(ctx: Context): number {
+    const options = (ADJACENCY[ctx.state.position] || []).filter((c) => c !== ctx.state.last_position);
+    let best = options[0];
+    let bestScore = -Infinity;
+    for (const cell of options) {
+      const now = this.cellValue(ctx, cell);
+      const next = Math.max(...(ADJACENCY[cell] || []).map((c) => this.cellValue(ctx, c)));
+      const score = now + (ctx.day < TOTAL_DAYS ? LOOKAHEAD * next : 0) + Math.random() * 0.05;
+      if (score > bestScore) {
+        bestScore = score;
+        best = cell;
       }
-      
-      // 프론트엔드에 에러 알림
-      if (this.io) {
-        try {
-          const client = await pool.connect();
-          try {
-            const roomResult = await client.query(
-              'SELECT room_id FROM games WHERE id = $1',
-              [gameId]
-            );
-            
-            if (roomResult.rows.length > 0) {
-              const roomId = roomResult.rows[0].room_id;
-              this.io.to(roomId).emit('ai-turn-error', {
-                gameId,
-                playerId,
-                error: error.message || 'AI 턴 실행 중 오류가 발생했습니다',
-                isCritical: isCriticalError,
-                timestamp: new Date()
-              });
-              console.log(`📡 AI 에러 알림 전송: ${roomId}`);
-            }
-          } finally {
-            client.release();
+    }
+    return best;
+  }
+
+  private cellValue(ctx: Context, cell: number): number {
+    return cell === 6 ? Math.max(...[1, 2, 3, 4, 5].map((a) => this.actionValue(ctx, a))) : this.actionValue(ctx, cell);
+  }
+
+  private bestAction(ctx: Context, candidates: number[]): number {
+    return candidates.reduce((best, a) => (this.actionValue(ctx, a) > this.actionValue(ctx, best) ? a : best));
+  }
+
+  /** 행동 1회의 기대 가치 (점수 단위) */
+  actionValue(ctx: Context, action: number): number {
+    const avg = (cards: CardRow[], f: (c: CardRow) => number) =>
+      cards.length ? cards.reduce((s, c) => s + f(c), 0) / cards.length : 0;
+    const pts = (c: CardRow) => cardPoints(c.effects, ctx.multipliers);
+
+    switch (action) {
+      case 1:
+        return avg(ctx.decks.freeplan, pts);
+      case 2: {
+        // 계획 카드는 나중에 TC를 내야 하므로 (점수 - TC 기회비용)의 기대값
+        const planDeck = ctx.decks.plan.length ? ctx.decks.plan : ctx.decks.planAll;
+        return avg(planDeck, (c) => Math.max(0, pts(c) - ctx.lambda * c.cost)) + 0.3;
+      }
+      case 3: {
+        const bonus = ctx.playerCount === 2 && !ctx.houseVisited ? 500 : 0;
+        return ctx.lambda * (avg(ctx.decks.house, (c) => c.effects.money || 0) + bonus);
+      }
+      case 4:
+        return ctx.lambda * avg(ctx.decks.support, (c) => c.effects.money || 0);
+      case 5: {
+        // 찬스: 돈 카드 + 계획/추억/추가 행동 카드가 섞인 덱의 대략적 기대값
+        const chanceEV = ctx.lambda * 900 + 1.2;
+        return ctx.playerCount === 2 ? Math.max(chanceEV, ctx.lambda * 500) : chanceEV;
+      }
+      default:
+        return 0;
+    }
+  }
+
+  private twoPlayerChanceOption(ctx: Context): 'card' | 'money' {
+    return ctx.lambda * 500 > ctx.lambda * 900 + 1.2 ? 'money' : 'card';
+  }
+
+  private shouldUseResolveToken(ctx: Context, candidates: number[]): boolean {
+    const tokens = ctx.state.resolve_token;
+    if (tokens <= 0 || candidates.length === 0) return false;
+    // 1~6일차에 한 번도 안 쓰면 7일차에 +1 → 그 전까지는 아낀다 (이미 최대치면 아낄 이유 없음)
+    if (ctx.day < RESOLVE_RECOVERY_DAY && !ctx.tokenUsedEarly && tokens < MAX_RESOLVE_TOKENS) return false;
+    const remainingTurns = TOTAL_DAYS - ctx.day + 1;
+    const best = Math.max(...candidates.map((a) => this.actionValue(ctx, a)));
+    return tokens >= remainingTurns || best >= TOKEN_USE_THRESHOLD || ctx.day === TOTAL_DAYS;
+  }
+
+  /** 찬스 카드 대상/카드 선택 */
+  async chooseForChance(gameId: string, playerId: string, type: ChoiceType): Promise<ChanceChoice | null> {
+    const ctx = await this.loadContext(gameId, playerId);
+    const opponents = await this.loadOpponents(gameId, playerId);
+    if (opponents.length === 0) return null;
+    const pts = (c: CardRow) => cardPoints(c.effects, ctx.multipliers);
+    const value = (c: CardRow) => pts(c) - ctx.lambda * c.cost;
+
+    switch (type) {
+      case 'shared_house':
+      case 'shared_invest':
+      case 'buddy_action': {
+        // 함께 이득을 보는 카드: 현재 점수가 가장 낮은 상대를 골라 선두를 돕지 않는다
+        const weakest = [...opponents].sort((a, b) => a.estimate - b.estimate)[0];
+        return { targetId: weakest.playerId };
+      }
+      case 'purchase_request': {
+        let best: { targetId: string; cardId: string; v: number } | null = null;
+        for (const o of opponents) {
+          for (const c of o.hand) {
+            const v = value(c) - ctx.lambda * 1000;
+            if (!best || v > best.v) best = { targetId: o.playerId, cardId: c.id, v };
           }
-        } catch (notifyError) {
-          console.error('에러 알림 전송 실패:', notifyError);
         }
+        return best && best.v > 0 ? { targetId: best.targetId, cardId: best.cardId } : null;
       }
-      
-      throw error;
+      case 'card_exchange': {
+        if (ctx.hand.length === 0) return null;
+        const worst = [...ctx.hand].sort((a, b) => value(a) - value(b))[0];
+        let best: { targetId: string; cardId: string; v: number } | null = null;
+        for (const o of opponents) {
+          for (const c of o.hand) {
+            const v = value(c) - value(worst);
+            if (!best || v > best.v) best = { targetId: o.playerId, cardId: c.id, v };
+          }
+        }
+        return best && best.v > 0
+          ? { targetId: best.targetId, requesterCardId: worst.id, targetCardId: best.cardId }
+          : null;
+      }
+      case 'swap_position': {
+        // 다음 턴에 갈 수 있는 칸이 가장 좋은 상대의 자리로
+        const scored = opponents.map((o) => ({
+          o,
+          v: Math.max(...(ADJACENCY[o.position] || []).map((c) => this.cellValue(ctx, c))),
+        }));
+        scored.sort((a, b) => b.v - a.v);
+        return { targetId: scored[0].o.playerId };
+      }
+      default:
+        return { targetId: opponents[0].playerId };
     }
   }
 
-  /**
-   * 지연 함수
-   */
-  private delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  /** CH16: 기대 드로우 가치보다 낮은 카드를 버린다 */
+  async chooseDiscards(gameId: string, playerId: string): Promise<string[]> {
+    const ctx = await this.loadContext(gameId, playerId);
+    const drawValue = this.actionValue(ctx, 2);
+    return ctx.hand
+      .filter((c) => cardPoints(c.effects, ctx.multipliers) - ctx.lambda * c.cost < drawValue)
+      .map((c) => c.id);
   }
 
-  /**
-   * 게임 상태 브로드캐스트
-   */
-  private async broadcastGameState(gameId: string): Promise<void> {
-    if (!this.io) return;
-
-    const client = await pool.connect();
-    try {
-      // 룸 ID 조회
-      const roomResult = await client.query(
-        'SELECT room_id FROM games WHERE id = $1',
-        [gameId]
-      );
-      
-      if (roomResult.rows.length === 0) return;
-      
-      const roomId = roomResult.rows[0].room_id;
-      
-      // 게임 상태 업데이트 이벤트 발송
-      this.io.to(roomId).emit('game-state-updated', {
-        gameId,
-        timestamp: new Date()
-      });
-      
-      console.log(`📡 게임 상태 업데이트 브로드캐스트: ${roomId}`);
-    } finally {
-      client.release();
-    }
-  }
-
-  /**
-   * 게임 상태 조회
-   */
-  private async getGameState(client: any, gameId: string, playerId: string) {
-    // 게임 정보
-    const gameResult = await client.query(
-      'SELECT day, travel_theme FROM games WHERE id = $1',
+  /** CH17: 달성 가능성 × 내 점수 이득이 큰 공동 목표 선택 */
+  async chooseJointPlan(gameId: string, playerId: string, options: string[]): Promise<string> {
+    const ctx = await this.loadContext(gameId, playerId);
+    const cards = await this.cards();
+    const current = await pool.query(
+      'SELECT COALESCE(SUM(amount), 0)::int AS total FROM joint_plan_contributions WHERE game_id = $1',
       [gameId]
     );
-    const game = gameResult.rows[0];
+    const expectedPool = current.rows[0].total + ctx.playerCount * 2500;
+    const score = (id: string) => {
+      const card = cards.get(id)!;
+      const chance = Math.min(1, expectedPool / Math.max(1, card.cost));
+      return cardPoints(card.effects, ctx.multipliers) * chance;
+    };
+    return options.reduce((a, b) => (score(b) > score(a) ? b : a));
+  }
 
-    // 플레이어 상태
-    const playerResult = await client.query(
-      `SELECT ps.*, 
-       (SELECT json_agg(json_build_object('id', c.id, 'code', c.code, 'name', c.name, 'cost', c.cost, 'effects', c.effects))
-        FROM hands h
-        JOIN cards c ON h.card_id = c.id
-        WHERE h.player_state_id = ps.id) as hand_cards
-       FROM player_states ps
-       WHERE ps.game_id = $1 AND ps.player_id = $2`,
+  /** 최종 결산 제출 내용 결정 (구매 / 공동 목표 기여 / 변환) */
+  async decideFinal(gameId: string, playerId: string): Promise<{ cardIds: string[]; contribution: number; conversions: number }> {
+    const ctx = await this.loadContext(gameId, playerId);
+    const items = ctx.hand.map((c) => ({ id: c.id, cost: c.cost, value: cardPoints(c.effects, ctx.multipliers) }));
+    const chosen = bestPurchase(items, ctx.state.money);
+    const spent = chosen.reduce((s, c) => s + c.cost, 0);
+    const leftover = ctx.state.money - spent;
+
+    const { jointPlanService } = await import('./JointPlanService');
+    const status = await jointPlanService.getContributionStatus(gameId);
+    const remaining = Math.max(0, status.targetAmount - status.totalAmount);
+    const roundUp = (v: number) => Math.ceil(v / 500) * 500;
+    // 남는 TC는 동률 판정 외에 쓸모가 없으므로 공동 목표에 넉넉히 보탠다
+    let contribution = remaining > 0 ? roundUp((remaining / ctx.playerCount) * 1.5) : 0;
+    if (ctx.playerCount >= 3) contribution = Math.max(contribution, 1000); // 최소 기여 패널티 회피
+    contribution = Math.min(leftover, contribution);
+
+    // 비주류 특성 변환은 총점을 항상 2점 낮추므로 하지 않는다
+    return { cardIds: chosen.map((c) => c.id), contribution: Math.max(0, contribution), conversions: 0 };
+  }
+
+  // ---------------------------------------------------------------------------
+  // 상태 로드
+  // ---------------------------------------------------------------------------
+
+  private async cards(): Promise<Map<string, CardRow>> {
+    if (!this.cardCache) {
+      const rows = await pool.query('SELECT id, code, name, type, cost, effects, metadata FROM cards');
+      this.cardCache = new Map(
+        rows.rows.map((r: any) => [
+          r.id,
+          { ...r, cost: r.cost || 0, effects: parseJSON(r.effects, {}), metadata: parseJSON(r.metadata, {}) },
+        ])
+      );
+    }
+    return this.cardCache;
+  }
+
+  private async loadContext(gameId: string, playerId: string): Promise<Context> {
+    const cards = await this.cards();
+    const game = await pool.query('SELECT day FROM games WHERE id = $1', [gameId]);
+    const stateRes = await pool.query('SELECT * FROM player_states WHERE game_id = $1 AND player_id = $2', [
+      gameId,
+      playerId,
+    ]);
+    const state = stateRes.rows[0];
+    const count = await pool.query('SELECT COUNT(*)::int AS n FROM player_states WHERE game_id = $1', [gameId]);
+
+    const travel = await pool.query(
+      `SELECT c.metadata FROM purchased pu JOIN cards c ON c.id = pu.card_id
+        WHERE pu.player_state_id = $1 AND c.type = 'travel' LIMIT 1`,
+      [state.id]
+    );
+    const multipliers = multipliersFromTravelCard(travel.rows[0]);
+
+    const handRes = await pool.query(
+      `SELECT h.card_id FROM hands h JOIN cards c ON c.id = h.card_id WHERE h.player_state_id = $1 AND c.type = 'plan'`,
+      [state.id]
+    );
+    const hand = handRes.rows.map((r: any) => cards.get(r.card_id)!).filter(Boolean);
+
+    const deckRes = await pool.query('SELECT type, card_order FROM decks WHERE game_id = $1', [gameId]);
+    const decks: Record<string, CardRow[]> = { plan: [], freeplan: [], house: [], support: [], chance: [] };
+    for (const row of deckRes.rows) {
+      decks[row.type] = parseJSON<string[]>(row.card_order, [])
+        .map((id) => cards.get(id)!)
+        .filter(Boolean);
+    }
+    decks.planAll = [...cards.values()].filter((c) => c.type === 'plan');
+    for (const type of ['house', 'support']) {
+      if (decks[type].length === 0) decks[type] = [...cards.values()].filter((c) => c.type === type);
+    }
+
+    const flags = await pool.query(
+      `SELECT
+         EXISTS(SELECT 1 FROM event_logs WHERE game_id = $1 AND event_type = 'action_3' AND data->>'playerId' = $2) AS house,
+         EXISTS(SELECT 1 FROM event_logs WHERE game_id = $1 AND event_type = 'resolve_token_used' AND data->>'playerId' = $2) AS token`,
       [gameId, playerId]
     );
-    const playerState = playerResult.rows[0];
 
-    // 여행지 가중치 조회
-    const travelResult = await client.query(
-      'SELECT effects FROM cards WHERE type = $1 AND code = $2',
-      ['travel', game.travel_theme]
-    );
-    const travelMultipliers = travelResult.rows[0]?.effects || {};
-
-    // 결심 토큰 사용 이력
-    const tokenUsedResult = await client.query(
-      `SELECT COUNT(*) as count FROM event_logs 
-       WHERE game_id = $1 
-       AND event_type = 'resolve_token_used' 
-       AND data->>'playerId' = $2`,
-      [gameId, playerId]
-    );
-    const tokenUsedCount = parseInt(tokenUsedResult.rows[0].count);
+    const day = game.rows[0].day;
+    const lambda = this.moneyValue(state.money, day, hand, multipliers, decks.planAll);
 
     return {
       gameId,
       playerId,
-      day: game.day,
-      travelTheme: game.travel_theme,
-      travelMultipliers,
-      playerState,
-      handCards: playerState.hand_cards || [],
-      tokenUsedCount
+      day,
+      playerCount: count.rows[0].n,
+      state,
+      multipliers,
+      hand,
+      decks,
+      lambda,
+      houseVisited: flags.rows[0].house,
+      tokenUsedEarly: flags.rows[0].token,
     };
   }
 
-  /**
-   * 이동 결정 알고리즘
-   * 
-   * 우선순위:
-   * 1. 여행지 테마 x3 특성 → 조사하기(2번) 또는 일반 계획(손패 구매)
-   * 2. 돈이 부족하면 → 집안일(3번) 또는 여행 지원(4번)
-   * 3. 찬스(5번)는 가끔 (20% 확률)
-   * 4. 무료 계획(1번)은 초반에만
-   */
-  private async decideMove(gameState: any): Promise<number> {
-    const { day, playerState, travelMultipliers } = gameState;
-    const currentPosition = playerState.position;
-    const money = playerState.money;
+  /** 1TC의 점수 가치 λ */
+  private moneyValue(money: number, day: number, hand: CardRow[], m: Multipliers, planAll: CardRow[]): number {
+    const expectedIncome = Math.max(0, TOTAL_DAYS - day) * 700;
+    const budget = money + expectedIncome;
+    const items = hand.map((c) => ({ id: c.id, cost: c.cost, value: cardPoints(c.effects, m) }));
+    const funded = new Set(bestPurchase(items, budget).map((c) => c.id));
+    const unfunded = items.filter((c) => c.value > 0 && !funded.has(c.id));
+    const ratios = planAll.map((c) => cardPoints(c.effects, m) / c.cost).sort((a, b) => b - a);
+    const deckRatio = ratios.slice(0, Math.ceil(ratios.length / 3)).reduce((s, r) => s + r, 0) / Math.ceil(ratios.length / 3);
+    if (unfunded.length > 0) return Math.max(...unfunded.map((c) => c.value / c.cost));
+    // 손패를 다 살 수 있으면 앞으로 뽑을 좋은 카드를 위한 여유 자금 가치만 남는다
+    return deckRatio * 0.6;
+  }
 
-    // 인접 칸 계산 (게임 규칙에 따른 연결)
-    const adjacency: { [key: number]: number[] } = {
-      1: [2, 3],      // 무료계획 → 조사하기, 집안일
-      2: [1, 4],      // 조사하기 → 무료계획, 여행지원
-      3: [1, 5],      // 집안일 → 무료계획, 찬스
-      4: [2, 5, 6],   // 여행지원 → 조사하기, 찬스, 자유행동
-      5: [3, 4, 6],   // 찬스 → 집안일, 여행지원, 자유행동
-      6: [4, 5]       // 자유행동 → 여행지원, 찬스
-    };
-    const adjacentPositions = adjacency[currentPosition] || [];
-
-    // 전략 결정
-    const mainTrait = this.getMainTrait(travelMultipliers); // x3 특성
-    const needMoney = money < 5000;
-    const isEarlyGame = day <= 4;
-
-    // 우선순위 점수 계산
-    const scores: { [key: number]: number } = {};
-    
-    for (const pos of adjacentPositions) {
-      let score = 0;
-
-      switch (pos) {
-        case 1: // 무료 계획
-          score = isEarlyGame ? 30 : 10;
-          break;
-        case 2: // 조사하기 (계획 카드 드로우)
-          score = 50; // 항상 유용
-          break;
-        case 3: // 집안일
-          score = needMoney ? 70 : 20;
-          break;
-        case 4: // 여행 지원
-          score = needMoney ? 60 : 30;
-          break;
-        case 5: // 찬스
-          score = Math.random() < 0.2 ? 40 : 15;
-          break;
-        case 6: // 자유 행동 (결심 토큰 필요)
-          score = playerState.resolve_token > 0 ? 35 : 0;
-          break;
-      }
-
-      scores[pos] = score;
-    }
-
-    // 가장 높은 점수의 위치 선택
-    const targetPosition = adjacentPositions.reduce((a, b) => 
-      scores[a] > scores[b] ? a : b
+  private async loadOpponents(gameId: string, playerId: string) {
+    const cards = await this.cards();
+    const rows = await pool.query(
+      `SELECT ps.id, ps.player_id, ps.position, ps.traits, ps.money,
+              (SELECT c.metadata FROM purchased pu JOIN cards c ON c.id = pu.card_id
+                WHERE pu.player_state_id = ps.id AND c.type = 'travel' LIMIT 1) AS travel_metadata
+         FROM player_states ps WHERE ps.game_id = $1 AND ps.player_id <> $2`,
+      [gameId, playerId]
     );
-
-    return targetPosition;
-  }
-
-
-
-  /**
-   * 결심 토큰 사용 전략 (턴 종료 전 결정)
-   * - 2-5일 중 랜덤하게 1번 사용
-   * - 10-12일 중 랜덤하게 1번 사용
-   */
-  private async shouldUseResolveTokenNow(gameId: string, playerId: string): Promise<boolean> {
-    const client = await pool.connect();
-    try {
-      // 게임 상태 조회
-      const gameResult = await client.query(
-        'SELECT day FROM games WHERE id = $1',
-        [gameId]
+    const result = [];
+    for (const r of rows.rows) {
+      const hand = await pool.query(
+        `SELECT h.card_id FROM hands h JOIN cards c ON c.id = h.card_id WHERE h.player_state_id = $1 AND c.type = 'plan'`,
+        [r.id]
       );
-      const day = gameResult.rows[0].day;
-
-      // 플레이어 상태 조회
-      const playerResult = await client.query(
-        'SELECT resolve_token FROM player_states WHERE game_id = $1 AND player_id = $2',
-        [gameId, playerId]
-      );
-      const resolveToken = playerResult.rows[0].resolve_token;
-
-      // 토큰이 없으면 사용 불가
-      if (resolveToken <= 0) {
-        return false;
-      }
-
-      // 결심 토큰 사용 이력 조회
-      const tokenUsedResult = await client.query(
-        `SELECT data->>'day' as used_day FROM event_logs 
-         WHERE game_id = $1 
-         AND event_type = 'resolve_token_used' 
-         AND data->>'playerId' = $2
-         ORDER BY created_at`,
-        [gameId, playerId]
-      );
-
-      const usedDays = tokenUsedResult.rows.map(row => parseInt(row.used_day));
-
-      // 2-5일 중 사용 여부 확인
-      const usedInEarlyPhase = usedDays.some(d => d >= 2 && d <= 5);
-      
-      // 10-12일 중 사용 여부 확인
-      const usedInLatePhase = usedDays.some(d => d >= 10 && d <= 12);
-
-      // 2-5일 구간: 아직 사용하지 않았고 현재 2-5일이면 확률적으로 사용
-      if (!usedInEarlyPhase && day >= 2 && day <= 5) {
-        // Day 2: 25%, Day 3: 33%, Day 4: 50%, Day 5: 100%
-        const probability = day === 5 ? 1.0 : 1.0 / (6 - day);
-        return Math.random() < probability;
-      }
-
-      // 10-12일 구간: 아직 사용하지 않았고 현재 10-12일이면 확률적으로 사용
-      if (!usedInLatePhase && day >= 10 && day <= 12) {
-        // Day 10: 33%, Day 11: 50%, Day 12: 100%
-        const probability = day === 12 ? 1.0 : 1.0 / (13 - day);
-        return Math.random() < probability;
-      }
-
-      return false;
-    } finally {
-      client.release();
-    }
-  }
-
-  /**
-   * 결심 토큰 사용 실행
-   */
-  private async useResolveToken(gameId: string, playerId: string): Promise<void> {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-
-      // 플레이어 상태 조회
-      const stateResult = await client.query(
-        'SELECT id, resolve_token, position, last_position FROM player_states WHERE game_id = $1 AND player_id = $2',
-        [gameId, playerId]
-      );
-      const playerState = stateResult.rows[0];
-
-      if (playerState.resolve_token <= 0) {
-        throw new Error('결심 토큰이 부족합니다');
-      }
-
-      // 토큰 차감
-      await client.query(
-        'UPDATE player_states SET resolve_token = resolve_token - 1 WHERE id = $1',
-        [playerState.id]
-      );
-
-      // 사용 로그 기록
-      const gameResult = await client.query('SELECT day FROM games WHERE id = $1', [gameId]);
-      const currentDay = gameResult.rows[0].day;
-
-      await client.query(
-        'INSERT INTO event_logs (game_id, event_type, data) VALUES ($1, $2, $3)',
-        [gameId, 'resolve_token_used', JSON.stringify({ playerId, day: currentDay })]
-      );
-
-      // 추가 행동 선택 (직전 행동 제외)
-      const availableActions = [1, 2, 3, 4, 5, 6].filter(a => a !== playerState.last_position);
-      
-      // 우선순위: 2번(조사하기) > 3번(집안일) > 4번(여행지원) > 1번(무료계획)
-      let selectedAction = 2; // 기본값: 조사하기
-      
-      if (availableActions.includes(2)) {
-        selectedAction = 2; // 조사하기
-      } else if (availableActions.includes(3)) {
-        selectedAction = 3; // 집안일
-      } else if (availableActions.includes(4)) {
-        selectedAction = 4; // 여행지원
-      } else if (availableActions.includes(1)) {
-        selectedAction = 1; // 무료계획
-      } else {
-        selectedAction = availableActions[0]; // 남은 것 중 첫 번째
-      }
-
-      console.log(`🔥 AI 결심 토큰 사용: ${selectedAction}번 행동 수행`);
-
-      await client.query('COMMIT');
-      console.log(`✅ AI 결심 토큰 사용 완료`);
-      
-      // 추가 행동 수행 (별도 트랜잭션)
-      await this.performActionWithTransaction(gameId, playerId, selectedAction);
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
-
-  /**
-   * 공동 계획 기여 결정
-   * 3,000 ~ 9,000TC (500 단위)
-   */
-  async decideJointPlanContribution(gameId: string, playerId: string): Promise<number> {
-    const client = await pool.connect();
-    try {
-      // 플레이어 돈 확인
-      const result = await client.query(
-        'SELECT money FROM player_states WHERE game_id = $1 AND player_id = $2',
-        [gameId, playerId]
-      );
-      const money = result.rows[0].money;
-
-      // 기여 가능 범위
-      const minContribution = 3000;
-      const maxContribution = Math.min(9000, money);
-
-      if (maxContribution < minContribution) {
-        return 0; // 돈이 부족하면 기여하지 않음
-      }
-
-      // 500 단위로 랜덤 선택
-      const steps = Math.floor((maxContribution - minContribution) / 500) + 1;
-      const randomStep = Math.floor(Math.random() * steps);
-      const contribution = minContribution + (randomStep * 500);
-
-      return contribution;
-    } finally {
-      client.release();
-    }
-  }
-
-  /**
-   * 찬스 카드 처리
-   */
-  private async handleChanceCard(client: any, gameState: any): Promise<void> {
-    // 찬스 카드 드로우
-    const chanceResult = await client.query(
-      `SELECT c.* FROM decks d
-       JOIN cards c ON c.id = ANY(string_to_array(d.card_order::text, ',')::uuid[])
-       WHERE d.game_id = $1 AND d.type = 'chance'
-       LIMIT 1`,
-      [gameState.gameId]
-    );
-
-    if (chanceResult.rows.length === 0) return;
-
-    const chanceCard = chanceResult.rows[0];
-
-    // 찬스 카드 타입별 처리
-    switch (chanceCard.code) {
-      case 'CH1':
-      case 'CH2':
-        // 돈 받기 - 자동 처리
-        break;
-      
-      case 'CH3':
-      case 'CH4':
-      case 'CH5':
-      case 'CH6':
-      case 'CH7':
-        // 돈 잃기 - 자동 처리
-        break;
-
-      case 'CH8':
-      case 'CH9':
-        // 상호작용 - AI는 수락
-        break;
-
-      case 'CH10':
-        // 계획 구매 요청 - AI는 거절
-        break;
-
-      case 'CH14':
-      case 'CH15':
-      case 'CH16':
-      case 'CH17':
-        // 카드 드로우 - 자동 처리
-        break;
-
-      case 'CH18':
-      case 'CH19':
-        // 추가 행동 - 조사하기(2번) 선택
-        break;
-
-      case 'CH20':
-        // 공동 목표 지원 - 자동 처리
-        break;
-
-      case 'CH21':
-      case 'CH22':
-      case 'CH23':
-      case 'CH24':
-      case 'CH25':
-        // 캐치업 - 자동 처리
-        break;
-    }
-  }
-
-  /**
-   * 최종 구매 결정
-   * 여행지 테마에 맞춰 손패 카드 구매
-   */
-  async decideFinalPurchase(gameId: string, playerId: string): Promise<string[]> {
-    const client = await pool.connect();
-    try {
-      const gameState = await this.getGameState(client, gameId, playerId);
-      const { handCards, playerState, travelMultipliers } = gameState;
-
-      // 구매 가능한 카드 필터링
-      const affordableCards = handCards.filter((card: any) => 
-        card.cost && card.cost <= playerState.money
-      );
-
-      // 여행지 테마에 맞는 카드 우선순위
-      const mainTrait = this.getMainTrait(travelMultipliers);
-      const secondaryTrait = this.getSecondaryTrait(travelMultipliers);
-
-      // 점수 계산
-      const scoredCards = affordableCards.map((card: any) => {
-        let score = 0;
-        const effects = card.effects;
-
-        // 주요 특성 (x3)
-        if (effects[mainTrait]) {
-          score += effects[mainTrait] * 3;
-        }
-
-        // 부차 특성 (x2)
-        if (effects[secondaryTrait]) {
-          score += effects[secondaryTrait] * 2;
-        }
-
-        // 추억 보너스
-        if (effects.memory) {
-          score += effects.memory * 1.5;
-        }
-
-        return { card, score };
+      const multipliers = multipliersFromTravelCard({ metadata: r.travel_metadata });
+      result.push({
+        playerId: r.player_id as string,
+        position: r.position as number,
+        hand: hand.rows.map((h: any) => cards.get(h.card_id)!).filter(Boolean),
+        estimate: scorePlayer(parseJSON<Traits>(r.traits, {}), multipliers).totalScore + r.money / 1500,
       });
-
-      // 점수 순으로 정렬
-      scoredCards.sort((a: { card: any; score: number }, b: { card: any; score: number }) => b.score - a.score);
-
-      // 예산 내에서 최대한 구매
-      const purchaseCards: string[] = [];
-      let remainingMoney = playerState.money;
-
-      for (const { card } of scoredCards) {
-        if (card.cost <= remainingMoney) {
-          purchaseCards.push(card.id);
-          remainingMoney -= card.cost;
-        }
-      }
-
-      return purchaseCards;
-    } finally {
-      client.release();
     }
+    return result;
   }
 
-  /**
-   * 비주류 특성 변환 결정
-   */
-  async decideTraitConversion(gameId: string, playerId: string): Promise<number> {
-    const client = await pool.connect();
-    try {
-      const gameState = await this.getGameState(client, gameId, playerId);
-      const { playerState, travelMultipliers } = gameState;
-      const traits = playerState.traits;
-
-      // 가중치 1배 특성 찾기
-      const minorTraits: { [key: string]: number } = {};
-      let totalMinorPoints = 0;
-
-      for (const [trait, value] of Object.entries(traits)) {
-        if (trait === 'memory') continue;
-        
-        const multiplier = travelMultipliers[trait] || 1;
-        if (multiplier === 1 && typeof value === 'number') {
-          minorTraits[trait] = value;
-          totalMinorPoints += value;
-        }
-      }
-
-      // 최대 변환 횟수
-      const maxConversions = Math.floor(totalMinorPoints / 3);
-
-      // AI는 모든 비주류 특성을 변환
-      return maxConversions;
-    } finally {
-      client.release();
-    }
-  }
-
-  /**
-   * 주요 특성 추출 (x3)
-   */
-  private getMainTrait(multipliers: any): string {
-    for (const [trait, mult] of Object.entries(multipliers)) {
-      if (mult === 3) return trait;
-    }
-    return 'taste'; // 기본값
-  }
-
-  /**
-   * 부차 특성 추출 (x2)
-   */
-  private getSecondaryTrait(multipliers: any): string {
-    for (const [trait, mult] of Object.entries(multipliers)) {
-      if (mult === 2) return trait;
-    }
-    return 'culture'; // 기본값
-  }
-
-  /**
-   * 이동 실행 (트랜잭션 포함, 재시도 로직)
-   */
-  private async moveWithTransaction(gameId: string, playerId: string, position: number, retryCount = 0): Promise<void> {
-    const maxRetries = 3;
-    const client = await pool.connect();
-    
-    try {
-      // 타임아웃 설정 (60초 - 충분한 시간)
-      await client.query('SET statement_timeout = 60000');
-      await client.query('BEGIN');
-      
-      // 현재 위치 조회
-      const stateResult = await client.query(
-        'SELECT position FROM player_states WHERE game_id = $1 AND player_id = $2',
-        [gameId, playerId]
-      );
-      
-      if (stateResult.rows.length === 0) {
-        throw new Error('플레이어 상태를 찾을 수 없습니다');
-      }
-      
-      const currentPosition = stateResult.rows[0].position;
-      
-      // 위치 업데이트
-      await client.query(
-        'UPDATE player_states SET position = $1, last_position = $2 WHERE game_id = $3 AND player_id = $4',
-        [position, currentPosition, gameId, playerId]
-      );
-      
-      // 이벤트 로그
-      await client.query(
-        'INSERT INTO event_logs (game_id, event_type, data) VALUES ($1, $2, $3)',
-        [gameId, 'move', JSON.stringify({ playerId, from: currentPosition, to: position })]
-      );
-      
-      await client.query('COMMIT');
-      console.log(`✅ AI 이동 완료: ${currentPosition} → ${position}`);
-      
-    } catch (error: any) {
-      try {
-        await client.query('ROLLBACK');
-      } catch (rollbackError) {
-        // 롤백 실패는 무시 (이미 연결이 끊어진 경우)
-      }
-      
-      // 타임아웃 에러이고 재시도 가능하면 재시도
-      if (error.code === '57014' && retryCount < maxRetries) {
-        console.log(`⚠️ 이동 타임아웃, 재시도 ${retryCount + 1}/${maxRetries}`);
-        
-        // 클라이언트 해제
-        try {
-          client.release();
-        } catch (releaseError) {
-          // 이미 해제된 경우 무시
-        }
-        
-        // 잠시 대기 후 재시도
-        await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
-        return this.moveWithTransaction(gameId, playerId, position, retryCount + 1);
-      }
-      
-      // 재시도하지 않는 경우에만 finally로 넘어감
-      throw error;
-    } finally {
-      // 클라이언트 해제 (재시도 시에는 이미 해제됨)
-      try {
-        client.release();
-      } catch (e) {
-        // 이미 해제된 경우 무시
-      }
-    }
-  }
-
-  /**
-   * 행동 실행 (트랜잭션 포함, 재시도 로직)
-   */
-  private async performActionWithTransaction(gameId: string, playerId: string, action: number, retryCount = 0): Promise<void> {
-    const maxRetries = 3;
-    const client = await pool.connect();
-    
-    try {
-      // 타임아웃 설정 (60초 - 충분한 시간)
-      await client.query('SET statement_timeout = 60000');
-      await client.query('BEGIN');
-      
-      const stateResult = await client.query(
-        'SELECT id FROM player_states WHERE game_id = $1 AND player_id = $2',
-        [gameId, playerId]
-      );
-      const playerStateId = stateResult.rows[0].id;
-      
-      let deckType = '';
-      switch (action) {
-        case 1: deckType = 'freeplan'; break;
-        case 2: deckType = 'plan'; break;
-        case 3: deckType = 'house'; break;
-        case 4: deckType = 'support'; break;
-        case 5: deckType = 'chance'; break;
-        default: 
-          await client.query('COMMIT');
-          return;
-      }
-      
-      // 덱에서 카드 드로우
-      const deckResult = await client.query(
-        'SELECT card_order FROM decks WHERE game_id = $1 AND type = $2',
-        [gameId, deckType]
-      );
-      
-      if (deckResult.rows.length === 0) {
-        await client.query('COMMIT');
-        return;
-      }
-      
-      let cardOrder = deckResult.rows[0].card_order;
-      if (typeof cardOrder === 'string') {
-        cardOrder = JSON.parse(cardOrder);
-      }
-      if (cardOrder.length === 0) {
-        await client.query('COMMIT');
-        return;
-      }
-      
-      const cardId = cardOrder.shift();
-      
-      // 덱 업데이트
-      await client.query(
-        'UPDATE decks SET card_order = $1 WHERE game_id = $2 AND type = $3',
-        [JSON.stringify(cardOrder), gameId, deckType]
-      );
-      
-      // 카드 정보 조회
-      const cardResult = await client.query('SELECT * FROM cards WHERE id = $1', [cardId]);
-      const card = cardResult.rows[0];
-      
-      // 손패에 추가 (plan, freeplan만)
-      if (['plan', 'freeplan'].includes(deckType)) {
-        const seqResult = await client.query(
-          'SELECT COALESCE(MAX(seq), -1) + 1 as next_seq FROM hands WHERE player_state_id = $1',
-          [playerStateId]
-        );
-        
-        await client.query(
-          'INSERT INTO hands (player_state_id, card_id, seq) VALUES ($1, $2, $3)',
-          [playerStateId, cardId, seqResult.rows[0].next_seq]
-        );
-      }
-      
-      // TC 효과 적용 (house, support)
-      if (card.effects && card.effects.money) {
-        await client.query(
-          'UPDATE player_states SET money = money + $1 WHERE id = $2',
-          [card.effects.money, playerStateId]
-        );
-      }
-      
-      // 행동 로그
-      await client.query(
-        'INSERT INTO event_logs (game_id, event_type, data) VALUES ($1, $2, $3)',
-        [gameId, `action_${action}`, JSON.stringify({ playerId, action, cardId })]
-      );
-      
-      await client.query('COMMIT');
-      console.log(`✅ AI 행동 완료: ${action}번`);
-      
-    } catch (error: any) {
-      try {
-        await client.query('ROLLBACK');
-      } catch (rollbackError) {
-        // 롤백 실패는 무시 (이미 연결이 끊어진 경우)
-      }
-      
-      // 타임아웃 에러이고 재시도 가능하면 재시도
-      if (error.code === '57014' && retryCount < maxRetries) {
-        console.log(`⚠️ 행동 타임아웃, 재시도 ${retryCount + 1}/${maxRetries}`);
-        
-        // 클라이언트 해제
-        try {
-          client.release();
-        } catch (releaseError) {
-          // 이미 해제된 경우 무시
-        }
-        
-        // 잠시 대기 후 재시도
-        await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
-        return this.performActionWithTransaction(gameId, playerId, action, retryCount + 1);
-      }
-      
-      // 재시도하지 않는 경우에만 finally로 넘어감
-      throw error;
-    } finally {
-      // 클라이언트 해제 (재시도 시에는 이미 해제됨)
-      try {
-        client.release();
-      } catch (e) {
-        // 이미 해제된 경우 무시
-      }
+  async notifyError(gameId: string, playerId: string, error: any) {
+    const roomId = await getRoomId(gameId);
+    if (this.io && roomId) {
+      this.io.to(roomId).emit('ai-turn-error', {
+        gameId,
+        playerId,
+        error: error?.message || 'AI 턴 실행 중 오류가 발생했습니다',
+        timestamp: new Date(),
+      });
     }
   }
 }

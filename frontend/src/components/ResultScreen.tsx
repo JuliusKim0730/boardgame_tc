@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../services/api';
-import TraitConversionModal from './TraitConversionModal';
+import { TRAIT_KEYS, TRAIT_LABELS } from '../utils/scoring';
 import './ResultScreen.css';
 
 interface Props {
@@ -11,128 +11,59 @@ interface Props {
   onBackToLobby: () => void;
 }
 
+type TraitScore = { base: number; multiplier: number; score: number };
+
 interface PlayerResult {
   playerId: string;
+  nickname?: string;
   rank: number;
   totalScore: number;
-  breakdown: {
-    taste: { base: number; multiplier: number; score: number };
-    history: { base: number; multiplier: number; score: number };
-    nature: { base: number; multiplier: number; score: number };
-    culture: { base: number; multiplier: number; score: number };
-    leisure: { base: number; multiplier: number; score: number };
-    water: { base: number; multiplier: number; score: number };
-    memory: { base: number; score: number };
-  };
+  memoryScore: number;
   money: number;
+  breakdown: Record<string, any> & {
+    memory: { base: number; score: number };
+    conversions?: number;
+    contribution?: number;
+    jointPlan?: any;
+  };
   purchasedCards: any[];
   travelCard?: any;
 }
 
+const TRAIT_ICONS: Record<string, string> = {
+  taste: '🍽️',
+  history: '🏛️',
+  nature: '🌲',
+  culture: '🎭',
+  leisure: '⚽',
+  water: '🏊',
+};
+
 function ResultScreen({ gameId, roomId, playerId, onRestart, onBackToLobby }: Props) {
   const [results, setResults] = useState<PlayerResult[]>([]);
   const [loading, setLoading] = useState(true);
-  const [myResult, setMyResult] = useState<PlayerResult | null>(null);
-  const [showTraitConversion, setShowTraitConversion] = useState(true);
-  const [conversionComplete, setConversionComplete] = useState(false);
 
   useEffect(() => {
-    loadResults();
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    // 모든 플레이어가 제출해야 결과가 확정되므로 확정될 때까지 다시 시도
+    const load = async () => {
+      try {
+        const response = await api.finalize(gameId);
+        if (!cancelled) {
+          setResults(response.data);
+          setLoading(false);
+        }
+      } catch {
+        if (!cancelled) timer = setTimeout(load, 2000);
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [gameId]);
-
-  const loadResults = async () => {
-    try {
-      const response = await api.finalize(gameId);
-      setResults(response.data);
-      
-      // 내 결과 찾기
-      const mine = response.data.find((r: PlayerResult) => r.playerId === playerId);
-      setMyResult(mine);
-    } catch (error) {
-      console.error('결과 로드 실패:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleTraitConversion = async (conversions: number) => {
-    try {
-      await api.convertTraits(gameId, playerId, conversions);
-      setConversionComplete(true);
-      setShowTraitConversion(false);
-      // 결과 다시 로드
-      await loadResults();
-    } catch (error) {
-      console.error('Failed to convert traits:', error);
-      alert('특성 변환에 실패했습니다.');
-    }
-  };
-
-  const handleSkipConversion = () => {
-    setConversionComplete(true);
-    setShowTraitConversion(false);
-  };
-
-  // 비주류 특성 추출 (가중치 1배)
-  const getMinorTraits = (): { [key: string]: number } => {
-    if (!myResult) {
-      return {
-        taste: 0,
-        history: 0,
-        nature: 0,
-        culture: 0,
-        leisure: 0,
-        water: 0
-      };
-    }
-    
-    const minorTraits: { [key: string]: number } = {
-      taste: 0,
-      history: 0,
-      nature: 0,
-      culture: 0,
-      leisure: 0,
-      water: 0
-    };
-    const breakdown = myResult.breakdown;
-    
-    if (breakdown.taste.multiplier === 1) minorTraits.taste = breakdown.taste.base;
-    if (breakdown.history.multiplier === 1) minorTraits.history = breakdown.history.base;
-    if (breakdown.nature.multiplier === 1) minorTraits.nature = breakdown.nature.base;
-    if (breakdown.culture.multiplier === 1) minorTraits.culture = breakdown.culture.base;
-    if (breakdown.leisure.multiplier === 1) minorTraits.leisure = breakdown.leisure.base;
-    if (breakdown.water.multiplier === 1) minorTraits.water = breakdown.water.base;
-    
-    return minorTraits;
-  };
-
-  const getTravelMultipliers = (): { [key: string]: number } => {
-    if (!myResult) {
-      return {
-        taste: 1,
-        history: 1,
-        nature: 1,
-        culture: 1,
-        leisure: 1,
-        water: 1
-      };
-    }
-    
-    return {
-      taste: myResult.breakdown.taste.multiplier,
-      history: myResult.breakdown.history.multiplier,
-      nature: myResult.breakdown.nature.multiplier,
-      culture: myResult.breakdown.culture.multiplier,
-      leisure: myResult.breakdown.leisure.multiplier,
-      water: myResult.breakdown.water.multiplier,
-    };
-  };
-
-  const getMaxConversions = (): number => {
-    const minorTraits = getMinorTraits();
-    const totalMinorPoints = Object.values(minorTraits).reduce((sum, val) => sum + val, 0);
-    return Math.floor(totalMinorPoints / 3);
-  };
 
   const handleRestart = async () => {
     try {
@@ -154,30 +85,20 @@ function ResultScreen({ gameId, roomId, playerId, onRestart, onBackToLobby }: Pr
     );
   }
 
-  return (
-    <>
-      {showTraitConversion && !conversionComplete && myResult && (
-        <TraitConversionModal
-          isOpen={true}
-          minorTraits={getMinorTraits()}
-          multipliers={getTravelMultipliers()}
-          maxConversions={getMaxConversions()}
-          onConfirm={handleTraitConversion}
-          onCancel={handleSkipConversion}
-        />
-      )}
+  const myResult = results.find((r) => r.playerId === playerId);
+  const joint = results[0]?.breakdown?.jointPlan;
+  const nameOf = (id: string) => results.find((r) => r.playerId === id)?.nickname || '플레이어';
+  const winners = results.filter((r) => r.rank === 1);
 
-      {(!showTraitConversion || conversionComplete) && (
-        <div className="result-screen-container">
-          <div className="card result-card">
-            <h2 className="result-title">🎉 게임 결과</h2>
+  return (
+    <div className="result-screen-container">
+      <div className="card result-card">
+        <h2 className="result-title">🎉 게임 결과</h2>
+        {winners.length > 1 && <p className="result-subtitle">🤝 공동 우승!</p>}
 
         <div className="rankings">
           {results.map((result) => (
-            <div
-              key={result.playerId}
-              className={`rank-item rank-${result.rank}`}
-            >
+            <div key={result.playerId} className={`rank-item rank-${result.rank}`}>
               <div className="rank-badge">
                 {result.rank === 1 && '🥇'}
                 {result.rank === 2 && '🥈'}
@@ -186,11 +107,11 @@ function ResultScreen({ gameId, roomId, playerId, onRestart, onBackToLobby }: Pr
               </div>
               <div className="player-info">
                 <p className="player-name">
-                  플레이어 {result.playerId.substring(0, 8)}
+                  {result.nickname || `플레이어 ${result.playerId.substring(0, 8)}`}
                   {result.playerId === playerId && ' (나)'}
                 </p>
                 <p className="player-score">
-                  {result.money.toLocaleString()}원 보유
+                  🎯 {result.travelCard?.name || '-'} · 추억 {result.memoryScore} · {result.money.toLocaleString()}TC 남음
                 </p>
               </div>
               <div className="score-value">{result.totalScore}점</div>
@@ -198,101 +119,70 @@ function ResultScreen({ gameId, roomId, playerId, onRestart, onBackToLobby }: Pr
           ))}
         </div>
 
+        {joint && (
+          <div className="joint-result">
+            <h3>🤝 공동 목표: {joint.cardName}</h3>
+            <p>
+              기여 합계 {Number(joint.total).toLocaleString()} / {Number(joint.target).toLocaleString()}TC →{' '}
+              <strong>{joint.success ? '달성!' : '실패'}</strong>
+            </p>
+            <p className="joint-contributions">
+              {(joint.contributions || [])
+                .map((c: any) => `${nameOf(c.playerId)} ${Number(c.amount).toLocaleString()}TC`)
+                .join(' · ')}
+            </p>
+            {joint.success && joint.topContributors?.length > 0 && (
+              <p>
+                최다 기여 보너스({TRAIT_LABELS[joint.bonus?.trait as keyof typeof TRAIT_LABELS] || joint.bonus?.trait} +
+                {joint.bonus?.value}): {joint.topContributors.map(nameOf).join(', ')}
+              </p>
+            )}
+            {!joint.success && joint.penalizedPlayers?.length > 0 && (
+              <p>최소 기여 패널티(추억 -2): {joint.penalizedPlayers.map(nameOf).join(', ')}</p>
+            )}
+          </div>
+        )}
+
         {myResult && (
           <>
-            {/* 여행지 카드 정보 */}
-            {myResult.travelCard && (
-              <div className="travel-card-result">
-                <h3>🎯 내 여행지</h3>
-                <div className="travel-card-info">
-                  <div className="travel-card-name-result">{myResult.travelCard.name}</div>
-                  <div className="travel-multipliers">
-                    <div className="multiplier-item">
-                      <span>🍽️ 맛</span>
-                      <span className={`multiplier-badge mult-${myResult.breakdown.taste.multiplier}`}>
-                        ×{myResult.breakdown.taste.multiplier}
-                      </span>
-                    </div>
-                    <div className="multiplier-item">
-                      <span>🏛️ 역사</span>
-                      <span className={`multiplier-badge mult-${myResult.breakdown.history.multiplier}`}>
-                        ×{myResult.breakdown.history.multiplier}
-                      </span>
-                    </div>
-                    <div className="multiplier-item">
-                      <span>🌲 자연</span>
-                      <span className={`multiplier-badge mult-${myResult.breakdown.nature.multiplier}`}>
-                        ×{myResult.breakdown.nature.multiplier}
-                      </span>
-                    </div>
-                    <div className="multiplier-item">
-                      <span>🎭 문화</span>
-                      <span className={`multiplier-badge mult-${myResult.breakdown.culture.multiplier}`}>
-                        ×{myResult.breakdown.culture.multiplier}
-                      </span>
-                    </div>
-                    <div className="multiplier-item">
-                      <span>⚽ 레저</span>
-                      <span className={`multiplier-badge mult-${myResult.breakdown.leisure.multiplier}`}>
-                        ×{myResult.breakdown.leisure.multiplier}
-                      </span>
-                    </div>
-                    <div className="multiplier-item">
-                      <span>🏊 물놀이</span>
-                      <span className={`multiplier-badge mult-${myResult.breakdown.water.multiplier}`}>
-                        ×{myResult.breakdown.water.multiplier}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-            
             <div className="score-breakdown">
-              <h3>내 점수 상세</h3>
+              <h3>내 점수 상세 {myResult.travelCard && `(${myResult.travelCard.name})`}</h3>
               <div className="breakdown-grid">
-                <div className="breakdown-item">
-                  <p className="breakdown-label">🍽️ 맛</p>
-                  <p className="breakdown-value">
-                    {myResult.breakdown.taste.base} × {myResult.breakdown.taste.multiplier} = {myResult.breakdown.taste.score}
-                  </p>
-                </div>
-                <div className="breakdown-item">
-                  <p className="breakdown-label">🏛️ 역사</p>
-                  <p className="breakdown-value">
-                    {myResult.breakdown.history.base} × {myResult.breakdown.history.multiplier} = {myResult.breakdown.history.score}
-                  </p>
-                </div>
-                <div className="breakdown-item">
-                  <p className="breakdown-label">🌲 자연</p>
-                  <p className="breakdown-value">
-                    {myResult.breakdown.nature.base} × {myResult.breakdown.nature.multiplier} = {myResult.breakdown.nature.score}
-                  </p>
-                </div>
-                <div className="breakdown-item">
-                  <p className="breakdown-label">🎭 문화</p>
-                  <p className="breakdown-value">
-                    {myResult.breakdown.culture.base} × {myResult.breakdown.culture.multiplier} = {myResult.breakdown.culture.score}
-                  </p>
-                </div>
-                <div className="breakdown-item">
-                  <p className="breakdown-label">⚽ 레저</p>
-                  <p className="breakdown-value">
-                    {myResult.breakdown.leisure.base} × {myResult.breakdown.leisure.multiplier} = {myResult.breakdown.leisure.score}
-                  </p>
-                </div>
-                <div className="breakdown-item">
-                  <p className="breakdown-label">🏊 물놀이</p>
-                  <p className="breakdown-value">
-                    {myResult.breakdown.water.base} × {myResult.breakdown.water.multiplier} = {myResult.breakdown.water.score}
-                  </p>
-                </div>
+                {TRAIT_KEYS.map((trait) => {
+                  const t = myResult.breakdown[trait] as TraitScore;
+                  return (
+                    <div className="breakdown-item" key={trait}>
+                      <p className="breakdown-label">
+                        {TRAIT_ICONS[trait]} {TRAIT_LABELS[trait]}
+                      </p>
+                      <p className="breakdown-value">
+                        {t?.base || 0} × {t?.multiplier ?? 1} = {t?.score || 0}
+                      </p>
+                    </div>
+                  );
+                })}
                 <div className="breakdown-item">
                   <p className="breakdown-label">💭 추억</p>
                   <p className="breakdown-value">{myResult.breakdown.memory.score}</p>
                 </div>
               </div>
+              {(myResult.breakdown.conversions || 0) > 0 && (
+                <p className="breakdown-note">비주류 특성 변환 {myResult.breakdown.conversions}회 적용</p>
+              )}
             </div>
+
+            {myResult.purchasedCards.length > 0 && (
+              <div className="score-breakdown">
+                <h3>내가 확정한 계획</h3>
+                <div className="purchased-list">
+                  {myResult.purchasedCards.map((c: any) => (
+                    <span key={c.id} className="purchased-chip">
+                      {c.type === 'freeplan' ? '🆓' : '🗺️'} {c.name}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
           </>
         )}
 
@@ -303,11 +193,9 @@ function ResultScreen({ gameId, roomId, playerId, onRestart, onBackToLobby }: Pr
           <button className="btn btn-secondary" onClick={onBackToLobby}>
             로비로
           </button>
-          </div>
         </div>
       </div>
-      )}
-    </>
+    </div>
   );
 }
 

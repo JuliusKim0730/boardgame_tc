@@ -43,7 +43,7 @@ function HandCards({ cards }: Props) {
   const renderEffects = (effects: any, cardId?: string) => {
     if (!effects || typeof effects !== 'object') return null;
     
-    return Object.entries(effects).map(([key, value]) => {
+    return Object.entries(effects as Record<string, number>).map(([key, value]) => {
       const uniqueKey = cardId ? `${cardId}-${key}` : key;
       
       if (key === 'money') {
@@ -108,7 +108,7 @@ function HandCards({ cards }: Props) {
                 </div>
               )}
               
-              {selectedCard.cost && (
+              {selectedCard.cost > 0 && (
                 <div className="card-cost-detail">
                   <span className="label">비용:</span>
                   <span className="value">{selectedCard.cost.toLocaleString()}TC</span>

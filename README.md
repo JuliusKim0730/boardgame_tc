@@ -1,158 +1,135 @@
-# 열네 밤의 꿈 웹 보드게임
+# 🌙 열네 밤의 꿈 — 실시간 웹 보드게임
 
-14일 동안 여행 준비를 하며 가장 높은 행복 점수를 목표로 하는 실시간 웹 보드게임
+> 여름 방학 14일 동안 꿈꾸던 가족 여행을 준비하며 **가장 높은 '행복 점수'** 를 노리는 2~5인 전략 보드게임.
+> 팀 에보개의 보드게임 룰북 v4.1을 실시간 멀티플레이 웹 게임 + AI 플레이어로 구현했습니다.
 
-## ⚠️ 로컬 실행 시 주의사항
+| 항목 | 내용 |
+| --- | --- |
+| 플레이 | https://boardgame-tc-frontend.vercel.app (방 만들기 → 슬롯에 🤖 AI 추가 → 시작) |
+| 인원 | 2~5인 (사람 + AI 자유 조합, 혼자서도 AI와 대전 가능) |
+| 스택 | React 18 + TypeScript + Vite / Node.js + Express + Socket.IO / PostgreSQL(Supabase) |
+| 배포 | Frontend: Vercel · Backend: Render · DB: Supabase |
 
-**문제가 발생하면 다음 문서를 확인하세요:**
-- 📘 `LOCAL_ISSUE_FIX_GUIDE.md` - 로컬 실행 이슈 해결
-- 🚀 `QUICK_START_UPDATED.md` - 최신 시작 가이드
-- 🔍 `node check-local-setup.js` - 환경 설정 진단
+---
 
-**주요 수정사항 (2024-12-03)**:
-- ✅ localStorage 접근 에러 해결
-- ✅ Socket 연결 timeout 해결 (포트 4000으로 통일)
-- ✅ API 400 에러 처리 개선
+## 게임 한눈에 보기
 
-## 프로젝트 구조
+1. 각자 **여행지 카드**(예: 제주 = 자연×3, 맛×2, 물놀이×1)를 받고 3,000TC로 시작합니다.
+2. 매일(14라운드) **이동 → 행동**: 6칸짜리 보드에서 인접 칸으로 이동해 그 칸의 행동을 합니다.
+   `1 무료 계획` `2 조사하기(계획 카드)` `3 집안일(TC)` `4 여행 지원(TC±)` `5 찬스` `6 자유 행동`
+3. 14일 뒤 **최종 결산**: 모은 계획 카드를 TC로 구매하고, 공동 목표에 비공개로 기여합니다.
+4. **최종 행복 점수 = Σ(특성 × 여행지 가중치) + 추억 + 공동 목표 보너스**, 동점이면 추억 → 남은 TC 순.
+
+규칙 원문: [`rulebook/game_rule_v4.1.md`](rulebook/game_rule_v4.1.md) · 카드 목록: [`rulebook/game_card_v4.1.md`](rulebook/game_card_v4.1.md)
+
+---
+
+## 아키텍처
 
 ```
-/
-├── backend/          # Node.js + Express + TypeScript 서버
-├── frontend/         # React + TypeScript 클라이언트 (추후 구현)
-├── shared/           # 공통 타입 정의
-├── docs/             # 프로젝트 문서
-├── workflows/        # 워크플로우 상세 문서
-└── rulebook/         # 게임 룰북
+frontend (Vercel)                     backend (Render)                          Supabase
+┌──────────────────────┐  REST   ┌──────────────────────────────────────┐   ┌──────────────┐
+│ React + Vite         │ ──────▶ │ routes/  gameRoutes, roomRoutes      │   │ PostgreSQL   │
+│  GameScreen          │         │ services/                            │──▶│ games, turns │
+│  FinalPurchaseModal  │ ◀────── │  TurnService   이동·행동·추가행동 검증 │   │ actions,     │
+│  ResultScreen        │ Socket  │  TurnManager   턴/일차 전환, 턴 락    │   │ decks, hands │
+│  utils/scoring.ts    │  .IO    │  ChanceService 찬스 카드 25종        │   │ event_logs … │
+└──────────────────────┘         │  DeckService   드로우·덱 재충전       │   └──────────────┘
+                                 │  GameFinalizationService 최종 결산   │
+                                 │  AIPlayerService / AIScheduler (NPC) │
+                                 │ game/rules.ts  ← 순수 규칙 함수 + 테스트│
+                                 └──────────────────────────────────────┘
 ```
 
-## 기술 스택
+**설계 포인트**
 
-- **Backend**: Node.js 20, Express, TypeScript, Socket.io
-- **Database**: PostgreSQL
-- **WebSocket**: Socket.io (실시간 동기화)
-- **Frontend**: React, TypeScript (예정)
+- **서버 권위(Server-authoritative) 턴 규칙**: 이번 턴의 이동/주 행동/추가 행동 권한을 `actions` 테이블에 기록하고
+  매 요청마다 다시 읽어 검증합니다. 클라이언트가 조작해도 "이동 없이 행동", "같은 칸 반복", "행동 없이 턴 종료"가 불가능하고,
+  새로고침해도 턴 진행 상태가 그대로 복원됩니다.
+- **규칙 로직 분리**: 점수 계산·동률 순위·이동 제한·결심 토큰 회복·배낭 최적화를 `backend/src/game/rules.ts`의
+  순수 함수로 분리하고 단위 테스트로 고정했습니다 (`npm test`).
+- **사람과 AI가 같은 코드 경로**: AI도 `TurnService`의 같은 API로 이동·행동하므로 AI용 예외 규칙이 없습니다.
+- **트랜잭션 + 행 잠금**: 덱 드로우는 `SELECT … FOR UPDATE`로 직렬화하고, 최종 점수 확정은
+  `UPDATE … WHERE status='finalizing'` 한 번만 성공하도록 해 중복 계산을 막았습니다.
+- **재시작 복구**: Render 무료 플랜처럼 서버가 잠들었다 깨어나도 진행 중 게임의 턴 락과 멈춘 AI 턴을 DB에서 복원합니다.
 
-## 시작하기
+---
 
-### 1. 데이터베이스 설정 (Supabase - 무료)
+## NPC(AI) 전략
 
-**5분 안에 완료!** 상세 가이드: `SUPABASE_QUICK_START.md`
+`backend/src/services/AIPlayerService.ts` — 행동마다 **기대 점수**를 계산해 가장 좋은 칸으로 이동합니다.
 
-1. **https://supabase.com** 가입
-2. 새 프로젝트 생성 (이름: `boardgame-01`, 리전: Seoul)
-3. SQL Editor에서 스키마 실행 (`backend/src/db/schema.sql`)
-4. 카드 데이터 시드 (`backend/src/db/seedCards.sql`)
-5. 연결 정보를 `backend/.env`에 입력
+| 요소 | 방식 |
+| --- | --- |
+| 카드 가치 | 효과 × **내 여행지 가중치** (+추억) |
+| TC의 가치 λ | 예산이 모자라 못 사는 손패 카드의 `점수/TC` 효율. 돈이 부족하면 집안일·지원, 넉넉하면 계획 수집 쪽으로 기울어짐 |
+| 덱 기대값 | 남은 덱 카드 구성으로 평균 효과 계산 (카드 카운팅) |
+| 이동 | 이번 칸 가치 + 0.35 × 다음 턴 최선의 칸 가치 (1수 앞 탐색) |
+| 결심 토큰 | 1~6일차엔 아껴 7일차 회복(+1)을 받고, 이후 가치가 큰 턴에 사용 |
+| 찬스 대상 | 함께 이득 보는 카드는 최하위 상대와, 교환/구매는 내 점수 이득이 최대인 카드 |
+| 최종 구매 | 0/1 배낭 DP로 예산 내 최대 점수 조합, 남는 TC는 공동 목표에 기여 (3인 이상은 최소 기여 패널티 회피) |
 
-```env
-DB_HOST=aws-0-ap-northeast-2.pooler.supabase.com
-DB_PORT=5432
-DB_NAME=postgres
-DB_USER=postgres.xxxxx
-DB_PASSWORD=your-password
-```
+시뮬레이터로 18판(2·3·4인 각 6판)을 돌린 결과, AI가 **16판에서 1위**, 평균 22~32점 (무작위 플레이어 13~16점).
 
-**또는 로컬 PostgreSQL 사용:**
+---
+
+## 로컬 실행
+
+필요: Node.js 20+, PostgreSQL 14+ (또는 Supabase 프로젝트)
+
 ```bash
+# 1) DB 생성 + 스키마/카드 데이터 적용
 createdb boardgame
-psql -d boardgame -f backend/src/db/schema.sql
-psql -d boardgame -f backend/src/db/seedCards.sql
+cd backend && npm install
+PGDATABASE=boardgame npm run db:init          # 또는 DATABASE_URL=postgres://... npm run db:init
+
+# 2) 백엔드 (http://localhost:4000)
+cp .env.example .env                          # DB_HOST/DB_NAME/DB_USER/DB_PASSWORD 수정
+npm run dev
+
+# 3) 프런트엔드 (http://localhost:3000)
+cd ../frontend && npm install && npm run dev
 ```
 
-### 2. 백엔드 실행
+브라우저 탭을 여러 개 열면 탭마다 다른 플레이어로 참가할 수 있습니다 (세션은 탭별 저장).
+
+### 테스트
 
 ```bash
 cd backend
-npm install
-cp .env.example .env
-npm run dev
+npm test                       # 규칙 단위 테스트 (점수/동률/이동/토큰/변환/배낭)
+npm run simulate -- 4          # 서버 실행 중: 무작위 플레이어 1 + AI 3이 14일을 끝까지 플레이
 ```
 
-서버가 http://localhost:4000 에서 실행됩니다.
+---
 
-### 3. 프론트엔드 실행
+## 배포
 
-```bash
-cd frontend
-npm install
-npm run dev
+| 대상 | 설정 |
+| --- | --- |
+| Vercel (`frontend/`) | Build `npm run build`, Output `dist`, 환경변수 `VITE_API_URL`, `VITE_SOCKET_URL` = Render 주소 |
+| Render (`backend/`) | Build `npm install && npm run build`, Start `npm start`, 환경변수 `DB_*`, `CLIENT_URL` |
+| Supabase | `backend/scripts/init-db.sh`로 스키마·카드 적용 (서버 시작 시 누락 컬럼은 자동 보정) |
+
+Render 무료 플랜은 15분 동안 요청이 없으면 잠들어 첫 접속에 30초~1분이 걸립니다. 시연 전에 `/api/health`를 한 번 열어 두세요.
+Supabase 무료 프로젝트는 일정 기간 사용하지 않으면 일시 정지되므로 대시보드에서 상태를 확인하세요.
+
+---
+
+## 폴더 구조
+
+```
+backend/
+  src/game/rules.ts          순수 규칙 함수 (+ rules.test.ts)
+  src/services/              턴·찬스·덱·결산·AI 서비스
+  src/routes/                REST API
+  src/db/                    스키마, 마이그레이션, 카드 시드, ensureSchema
+  scripts/                   init-db.sh, simulate-game.mjs
+frontend/
+  src/components/            GameScreen, FinalPurchaseModal, ResultScreen, 각종 모달
+  src/utils/scoring.ts       점수 미리보기·최적 구매 추천
+rulebook/                    룰북 v4.1, 카드 리스트
+docs/                        PRD, ERD, QA 리포트, 과거 작업 노트(archive)
 ```
 
-클라이언트가 http://localhost:3000 에서 실행됩니다.
-
-## API 엔드포인트
-
-### REST API
-
-**방 관리**
-- `POST /api/rooms` - 방 생성
-- `POST /api/rooms/:code/join` - 방 참여
-- `GET /api/rooms/:roomId` - 방 상태 조회
-- `POST /api/rooms/:roomId/start` - 게임 시작
-- `POST /api/rooms/:roomId/soft-reset` - 소프트 리셋
-
-**게임 플레이**
-- `POST /api/games/:gameId/move` - 이동
-- `POST /api/games/:gameId/action` - 행동 (1~6번)
-- `POST /api/games/:gameId/end-turn` - 턴 종료
-- `POST /api/games/:gameId/chance/:cardCode` - 찬스 카드 실행
-- `POST /api/games/:gameId/chance-response` - 찬스 상호작용 응답
-- `POST /api/games/:gameId/contribute` - 공동 계획 기여
-- `GET /api/games/:gameId/joint-plan` - 공동 계획 현황 조회
-
-**게임 종료**
-- `POST /api/games/:gameId/final-purchase` - 최종 구매
-- `POST /api/games/:gameId/finalize` - 최종 정산
-- `POST /api/games/:gameId/result-closed` - 결과 창 닫기
-
-### WebSocket 이벤트
-
-- `join-room` - 방 참여
-- `leave-room` - 방 나가기
-- `turn-started` - 턴 시작 알림
-- `state-updated` - 게임 상태 업데이트
-- `chance-request` - 찬스 카드 상호작용 요청
-- `chance-resolved` - 찬스 카드 응답
-
-## 워크플로우
-
-1. **로비/방 관리** (`workflows/1.00_로비_방관리.md`)
-2. **게임 세팅/초기화** (`workflows/2.00_게임세팅_초기화.md`)
-3. **턴 루프/카드 행동** (`workflows/3.00_턴루프_카드행동.md`)
-4. **최종 정산/리플레이** (`workflows/4.00_최종정산_리플레이.md`)
-5. **동시성/예외/복구** (`workflows/5.00_동시성_예외복구.md`)
-
-## 개발 상태
-
-**백엔드 (95%)**
-- [x] 프로젝트 구조 설정
-- [x] 데이터베이스 스키마
-- [x] 방 생성/참여 API
-- [x] 게임 초기화 로직
-- [x] 턴 이동/행동 기본 구조
-- [x] WebSocket 실시간 동기화
-- [x] Turn Lock & 턴 관리 시스템
-- [x] 찬스 카드 상호작용 구현 (CH8-CH13)
-- [x] 공동 계획 기여 시스템
-- [x] 최종 정산 로직
-- [x] 소프트 리셋 기능
-- [x] 전체 카드 데이터 시드 (107장)
-- [ ] AFK/접속 끊김 처리 (선택사항)
-
-**프론트엔드 (95%)**
-- [x] 로비 화면 (방 생성/참여)
-- [x] 대기실 (플레이어 목록, 방장 시작) ⭐
-- [x] 게임 보드 UI
-- [x] 플레이어 정보 패널
-- [x] 손패 카드 UI
-- [x] 행동 버튼
-- [x] WebSocket 연동
-- [x] 찬스 카드 상호작용 모달 ⭐
-- [x] 결과 화면 (순위, 점수 세부) ⭐
-- [x] 공동 계획 기여 모달 ⭐
-
-**테스트 (0%)**
-- [ ] 단위 테스트 (선택사항)
-- [ ] 통합 테스트 (선택사항)
-- [ ] E2E 테스트 (선택사항)
+자세한 점검·수정 내역은 [`docs/QA_REPORT.md`](docs/QA_REPORT.md)를 참고하세요.

@@ -14,7 +14,7 @@ function PlayerInfo({ money, position, resolveToken, traits }: Props) {
       
       <div className="info-item">
         <span className="label">💰 돈:</span>
-        <span className="value">{money.toLocaleString()}원</span>
+        <span className="value">{money.toLocaleString()}TC</span>
       </div>
 
       <div className="info-item">

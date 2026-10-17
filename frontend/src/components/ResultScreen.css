@@ -244,3 +244,43 @@
   color: #6b7280;
   border: 2px solid #d1d5db;
 }
+
+.result-subtitle {
+  text-align: center;
+  font-weight: 600;
+  margin: -8px 0 16px;
+}
+
+.joint-result {
+  margin: 20px 0;
+  padding: 16px;
+  border-radius: 12px;
+  background: #f5f7ff;
+}
+
+.joint-result h3 {
+  margin: 0 0 8px;
+}
+
+.joint-result p {
+  margin: 4px 0;
+}
+
+.joint-contributions,
+.breakdown-note {
+  color: #666;
+  font-size: 0.9rem;
+}
+
+.purchased-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.purchased-chip {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #eef2ff;
+  font-size: 0.9rem;
+}

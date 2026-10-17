@@ -42,7 +42,7 @@ function ExtraActionModal({
       case 'repeat_current':
         return `현재 위치(${currentPosition}번)에서 행동을 1회 더 수행할 수 있습니다.`;
       case 'buddy_action':
-        return '추가 행동 1회를 수행할 수 있습니다. 원하는 행동을 선택하세요.';
+        return '추가 행동 1회를 수행할 수 있습니다. 원하는 행동을 선택하세요. (직전 행동은 반복 불가)';
       default:
         return '';
     }
@@ -62,7 +62,8 @@ function ExtraActionModal({
   };
 
   // repeat_current인 경우 현재 위치만 선택 가능
-  const selectableActions = type === 'repeat_current' && currentPosition
+  // (6번 자유 행동 칸이면 1~5 중 선택)
+  const selectableActions = type === 'repeat_current' && currentPosition && currentPosition !== 6
     ? [currentPosition]
     : availableActions;
 

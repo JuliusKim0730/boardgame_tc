@@ -1,5 +1,6 @@
 import { pool } from '../db/pool';
 import { Card } from '../types';
+import { shuffle } from '../game/rules';
 
 export class GameSetupService {
   // 게임 초기화
@@ -52,8 +53,10 @@ export class GameSetupService {
       
       // 여행지 카드 준비 (각 플레이어에게 1장씩 배분)
       const travelCards = await this.getCardsByType('travel');
-      const shuffledTravelCards = [...travelCards].sort(() => Math.random() - 0.5);
+      const shuffledTravelCards = shuffle(travelCards);
       
+      const initialPlans = shuffle(await this.getCardsByType('plan'));
+
       // 플레이어 상태 초기화 (초기 자금 3,000TC, 결심 토큰 1개)
       for (let i = 0; i < orderedPlayers.length; i++) {
         const playerStateResult = await client.query(
@@ -72,9 +75,8 @@ export class GameSetupService {
           [playerStateId, travelCard.id, 0]
         );
         
-        // 초기 일반 계획 카드 1장 드로우
-        const planCards = await this.getCardsByType('plan');
-        const randomCard = planCards[Math.floor(Math.random() * planCards.length)];
+        // 초기 일반 계획 카드 1장 (플레이어끼리 겹치지 않게)
+        const randomCard = initialPlans[i];
         
         await client.query(
           'INSERT INTO hands (player_state_id, card_id, seq) VALUES ($1, $2, $3)',
@@ -97,9 +99,11 @@ export class GameSetupService {
         await this.initializeDeck(client, gameId, 'chance');
       }
       
-      // 공동 목표 카드 1장 오픈
-      const jointCards = await this.getCardsByType('joint');
-      const jointCard = jointCards[Math.floor(Math.random() * jointCards.length)];
+      // 공동 목표 카드 1장 오픈 (덱 맨 위 카드)
+      const jointDeck = await client.query(`SELECT card_order FROM decks WHERE game_id = $1 AND type = 'joint'`, [gameId]);
+      const [jointCardId, ...restJoint] = jointDeck.rows[0].card_order;
+      await client.query(`UPDATE decks SET card_order = $1 WHERE game_id = $2 AND type = 'joint'`, [JSON.stringify(restJoint), gameId]);
+      const jointCard = { id: jointCardId };
       
       // 첫 번째 플레이어 = 선 플레이어 (방장)
       const firstPlayer = orderedPlayers[0];
@@ -142,8 +146,6 @@ export class GameSetupService {
       
       await client.query('COMMIT');
       
-      await client.query('COMMIT');
-      
       // 턴 락 설정 (COMMIT 후에 설정)
       const { turnManager } = await import('./TurnManager');
       turnManager.lockTurn(gameId, firstPlayer.id);
@@ -160,7 +162,7 @@ export class GameSetupService {
 
   private async initializeDeck(client: any, gameId: string, type: string) {
     const cards = await this.getCardsByType(type);
-    const shuffled = cards.sort(() => Math.random() - 0.5);
+    const shuffled = shuffle(cards);
     const cardIds = shuffled.map(c => c.id);
     
     await client.query(
@@ -173,7 +175,7 @@ export class GameSetupService {
     const cards = await this.getCardsByType('chance');
     // CH11, CH12, CH13 제거
     const filtered = cards.filter(c => !['CH11', 'CH12', 'CH13'].includes(c.code));
-    const shuffled = filtered.sort(() => Math.random() - 0.5);
+    const shuffled = shuffle(filtered);
     const cardIds = shuffled.map(c => c.id);
     
     await client.query(

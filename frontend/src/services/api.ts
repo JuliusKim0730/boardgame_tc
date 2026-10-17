@@ -63,23 +63,17 @@ export const api = {
   endTurn: (gameId: string, playerId: string) =>
     axios.post(`${API_BASE}/games/${gameId}/end-turn`, { playerId }),
 
-  executeChance: (gameId: string, playerId: string, cardCode: string) =>
-    axios.post(`${API_BASE}/games/${gameId}/chance/${cardCode}`, { playerId }),
-
   respondToChance: (gameId: string, interactionId: string, response: any) =>
     axios.post(`${API_BASE}/games/${gameId}/chance-response`, { interactionId, response }),
 
   respondToChanceInteraction: (interactionId: string, response: any) =>
     axios.post(`${API_BASE}/chance/respond`, { interactionId, response }),
 
-  contribute: (gameId: string, playerId: string, amount: number) =>
-    axios.post(`${API_BASE}/games/${gameId}/contribute`, { playerId, amount }),
-
   getJointPlanStatus: (gameId: string) =>
     axios.get(`${API_BASE}/games/${gameId}/joint-plan`),
 
-  finalPurchase: (gameId: string, playerId: string, cardIds: string[]) =>
-    axios.post(`${API_BASE}/games/${gameId}/final-purchase`, { playerId, cardIds }),
+  finalPurchase: (gameId: string, playerId: string, submission: { cardIds: string[]; contribution: number; conversions: number }) =>
+    axios.post(`${API_BASE}/games/${gameId}/final-purchase`, { playerId, ...submission }),
 
   finalize: (gameId: string) =>
     axios.post(`${API_BASE}/games/${gameId}/finalize`),
@@ -87,15 +81,8 @@ export const api = {
   resultClosed: (gameId: string, playerId: string) =>
     axios.post(`${API_BASE}/games/${gameId}/result-closed`, { playerId }),
 
-  // v4.1 신규 엔드포인트
-  convertTraits: (gameId: string, playerId: string, conversions: number) =>
-    axios.post(`${API_BASE}/games/${gameId}/convert-traits`, { playerId, conversions }),
-
   selectChanceOption: (gameId: string, playerId: string, option: 'card' | 'money') =>
     axios.post(`${API_BASE}/games/${gameId}/chance-option`, { playerId, option }),
-
-  checkResolveRecovery: (gameId: string) =>
-    axios.post(`${API_BASE}/games/${gameId}/check-resolve-recovery`),
 
   useResolveToken: (gameId: string, playerId: string, actionType: number) =>
     axios.post(`${API_BASE}/games/${gameId}/use-resolve-token`, { playerId, actionType }),
@@ -124,8 +111,8 @@ export const api = {
   extraAction: (gameId: string, playerId: string, actionType: number, skipMove: boolean = true) =>
     axios.post(`${API_BASE}/games/${gameId}/extra-action`, { playerId, actionType, skipMove }),
 
-  selectJointPlan: (gameId: string, cardId: string) =>
-    axios.post(`${API_BASE}/games/${gameId}/select-joint-plan`, { cardId }),
+  selectJointPlan: (gameId: string, cardId: string, playerId?: string) =>
+    axios.post(`${API_BASE}/games/${gameId}/select-joint-plan`, { cardId, playerId }),
 
   // 공동 계획 카드 목록 조회
   getJointPlanCards: () =>

@@ -9,12 +9,13 @@ interface PlayerPosition {
 
 interface Props {
   currentPosition: number;
+  blockedPosition?: number | null; // 직전 턴에 행동한 칸 (자발적 이동 불가)
   onPositionClick: (position: number) => void;
   disabled: boolean;
   allPlayers?: PlayerPosition[]; // 모든 플레이어 위치 정보
 }
 
-function GameBoard({ currentPosition, onPositionClick, disabled, allPlayers = [] }: Props) {
+function GameBoard({ currentPosition, blockedPosition, onPositionClick, disabled, allPlayers = [] }: Props) {
   const positions = [
     { id: 1, name: '무료 계획', color: '#4CAF50' },
     { id: 2, name: '조사하기', color: '#2196F3' },
@@ -38,12 +39,6 @@ function GameBoard({ currentPosition, onPositionClick, disabled, allPlayers = []
 
   const adjacent = getAdjacentPositions(currentPosition);
   
-  console.log('GameBoard 렌더링:', { 
-    currentPosition, 
-    adjacent, 
-    disabled,
-    canClickAny: !disabled && adjacent.length > 0
-  });
 
   return (
     <div className="game-board">
@@ -68,7 +63,7 @@ function GameBoard({ currentPosition, onPositionClick, disabled, allPlayers = []
         {positions.map((pos) => {
           const coords = getPositionCoords(pos.id);
           const isCurrent = pos.id === currentPosition;
-          const isAdjacent = adjacent.includes(pos.id);
+          const isAdjacent = adjacent.includes(pos.id) && pos.id !== blockedPosition;
           const canClick = !disabled && isAdjacent;
           
           // 이 위치에 있는 플레이어들
@@ -107,17 +102,7 @@ function GameBoard({ currentPosition, onPositionClick, disabled, allPlayers = []
                 strokeWidth={canClick ? '4' : '3'}
                 className={canClick ? 'clickable' : ''}
                 onClick={() => {
-                  console.log('=== 칸 클릭 ===');
-                  console.log('클릭한 칸:', pos.id, pos.name);
-                  console.log('클릭 가능 여부:', canClick);
-                  console.log('disabled:', disabled);
-                  console.log('isAdjacent:', isAdjacent);
-                  if (canClick) {
-                    console.log('onPositionClick 호출:', pos.id);
-                    onPositionClick(pos.id);
-                  } else {
-                    console.log('클릭 불가 - 조건 미충족');
-                  }
+                  if (canClick) onPositionClick(pos.id);
                 }}
                 style={{ cursor: canClick ? 'pointer' : 'default' }}
               />

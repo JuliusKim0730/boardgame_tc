@@ -1,419 +1,257 @@
 import { pool } from '../db/pool';
+import { Server } from 'socket.io';
 import { jointPlanService } from './JointPlanService';
+import {
+  addEffects,
+  applyConversions,
+  maxConversions,
+  multipliersFromTravelCard,
+  parseJSON,
+  rankPlayers,
+  scorePlayer,
+  Traits,
+} from '../game/rules';
+import { getPlayerState, getRoomId, logEvent, withTransaction } from './TurnState';
 
+export interface FinalSubmission {
+  cardIds: string[];
+  contribution?: number;
+  conversions?: number;
+}
+
+/**
+ * 최종 결산 (룰북 9)
+ *  9.1 일반 계획 카드 구매 → 9.2 공동 목표 판정 → 9.3 비주류 특성 변환 → 9.4 점수 확정
+ *
+ * 각 플레이어는 구매할 카드, 공동 목표 기여액(비공개), 특성 변환 횟수를 한 번에 제출한다.
+ * 모두 제출하면 기여액을 동시에 공개하고 점수를 계산한다.
+ */
 export class GameFinalizationService {
-  // 최종 구매
-  async finalPurchase(gameId: string, playerId: string, cardIds: string[]): Promise<void> {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
+  private io: Server | null = null;
 
-      const stateResult = await client.query(
-        'SELECT id, money FROM player_states WHERE game_id = $1 AND player_id = $2',
-        [gameId, playerId]
-      );
-
-      if (stateResult.rows.length === 0) {
-        throw new Error('플레이어를 찾을 수 없습니다');
-      }
-
-      const playerState = stateResult.rows[0];
-      
-      console.log(`💳 최종 구매: playerId=${playerId}, 구매 카드 수=${cardIds.length}`);
-      
-      let totalCost = 0;
-
-      // 구매할 카드들의 비용 계산
-      for (const cardId of cardIds) {
-        const cardResult = await client.query(
-          'SELECT cost FROM cards WHERE id = $1',
-          [cardId]
-        );
-        
-        if (cardResult.rows.length > 0) {
-          totalCost += cardResult.rows[0].cost || 0;
-        }
-      }
-
-      if (playerState.money < totalCost) {
-        throw new Error('돈이 부족합니다');
-      }
-      
-      console.log(`💰 총 구매 비용: ${totalCost}TC (보유: ${playerState.money}TC)`);
-
-      // 돈 차감
-      await client.query(
-        'UPDATE player_states SET money = money - $1 WHERE id = $2',
-        [totalCost, playerState.id]
-      );
-
-      // 구매하지 않은 카드를 버린 카드로 기록
-      const handCardsResult = await client.query(
-        'SELECT card_id FROM hands WHERE player_state_id = $1',
-        [playerState.id]
-      );
-      
-      for (const row of handCardsResult.rows) {
-        if (!cardIds.includes(row.card_id)) {
-          await client.query(
-            'INSERT INTO discarded_cards (game_id, player_state_id, card_id) VALUES ($1, $2, $3)',
-            [gameId, playerState.id, row.card_id]
-          );
-        }
-      }
-
-      // 구매 기록
-      for (const cardId of cardIds) {
-        const cardResult = await client.query(
-          'SELECT cost FROM cards WHERE id = $1',
-          [cardId]
-        );
-        
-        await client.query(
-          'INSERT INTO purchased (player_state_id, card_id, price_paid) VALUES ($1, $2, $3)',
-          [playerState.id, cardId, cardResult.rows[0].cost || 0]
-        );
-
-        // 손패에서 제거
-        await client.query(
-          'DELETE FROM hands WHERE player_state_id = $1 AND card_id = $2',
-          [playerState.id, cardId]
-        );
-      }
-
-      await client.query('COMMIT');
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
+  setSocketIO(io: Server) {
+    this.io = io;
   }
 
-  // 비주류 특성 변환 (가중치 1배 특성 3점 → 추억 +1)
-  async convertMinorTraits(gameId: string, playerId: string, conversions: number): Promise<void> {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
+  async finalPurchase(gameId: string, playerId: string, submission: FinalSubmission): Promise<{ allSubmitted: boolean }> {
+    const cardIds = [...new Set(submission.cardIds || [])];
+    const contribution = Math.max(0, Math.floor(Number(submission.contribution) || 0));
+    const conversions = Math.max(0, Math.floor(Number(submission.conversions) || 0));
 
-      const stateResult = await client.query(
-        'SELECT id, traits FROM player_states WHERE game_id = $1 AND player_id = $2',
-        [gameId, playerId]
+    const allSubmitted = await withTransaction(async (client) => {
+      const game = await client.query('SELECT status FROM games WHERE id = $1 FOR UPDATE', [gameId]);
+      if (game.rows[0]?.status !== 'finalizing') throw new Error('최종 결산 단계가 아닙니다');
+      if (await this.hasSubmitted(client, gameId, playerId)) throw new Error('이미 최종 제출을 완료했습니다');
+
+      const state = await getPlayerState(client, gameId, playerId);
+      const hand = await client.query(
+        `SELECT h.card_id, c.cost, c.effects, c.type FROM hands h JOIN cards c ON c.id = h.card_id
+          WHERE h.player_state_id = $1`,
+        [state.id]
       );
+      const handById = new Map(hand.rows.map((r: any) => [r.card_id, r]));
+      const chosen = cardIds.map((id) => {
+        const card: any = handById.get(id);
+        if (!card) throw new Error('손에 없는 카드는 구매할 수 없습니다');
+        return { id, ...card };
+      });
 
-      if (stateResult.rows.length === 0) {
-        throw new Error('플레이어를 찾을 수 없습니다');
+      const totalCost = chosen.reduce((sum, c) => sum + (c.cost || 0), 0);
+      if (totalCost + contribution > state.money) {
+        throw new Error(`TC가 부족합니다 (필요 ${(totalCost + contribution).toLocaleString()}TC / 보유 ${state.money.toLocaleString()}TC)`);
       }
 
-      const playerState = stateResult.rows[0];
-      const traits = playerState.traits;
-
-      // 플레이어의 여행지 카드 배수 조회
-      let multipliers: { [key: string]: number } = {};
-      if (playerState.travel_card_id) {
-        const travelCardResult = await client.query(
-          'SELECT metadata FROM cards WHERE id = $1',
-          [playerState.travel_card_id]
-        );
-        if (travelCardResult.rows.length > 0) {
-          const metadata = typeof travelCardResult.rows[0].metadata === 'string'
-            ? JSON.parse(travelCardResult.rows[0].metadata)
-            : travelCardResult.rows[0].metadata;
-          multipliers = metadata.multipliers || {};
-        }
+      let traits = parseJSON<Traits>(state.traits, {});
+      for (const card of chosen) {
+        traits = addEffects(traits, parseJSON(card.effects, {}));
+        await client.query('INSERT INTO purchased (player_state_id, card_id, price_paid) VALUES ($1, $2, $3)', [
+          state.id,
+          card.id,
+          card.cost || 0,
+        ]);
       }
+      // 구매하지 않은 카드는 버린다 (효과 없음, 손패에서 제거되면 버린 카드 더미로 간주)
+      await client.query('DELETE FROM hands WHERE player_state_id = $1', [state.id]);
+      await client.query('UPDATE player_states SET money = money - $1, traits = $2 WHERE id = $3', [
+        totalCost + contribution,
+        JSON.stringify(traits),
+        state.id,
+      ]);
 
-      // 가중치 1배인 특성 찾기
-      const minorTraits = Object.keys(multipliers).filter(key => (multipliers as any)[key] === 1);
-      
-      // 변환 가능한 총 점수 계산
-      let availablePoints = 0;
-      for (const trait of minorTraits) {
-        availablePoints += traits[trait] || 0;
-      }
+      await logEvent(client, gameId, 'final_submitted', {
+        playerId,
+        cardIds,
+        totalCost,
+        contribution,
+        conversions,
+      });
 
-      const maxConversions = Math.floor(availablePoints / 3);
-      if (conversions > maxConversions) {
-        throw new Error('변환 가능한 점수가 부족합니다');
-      }
-
-      // 변환 수행 (특성 -3, 추억 +1)
-      let remainingConversions = conversions;
-      for (const trait of minorTraits) {
-        while (remainingConversions > 0 && traits[trait] >= 3) {
-          traits[trait] -= 3;
-          traits.memory = (traits.memory || 0) + 1;
-          remainingConversions--;
-        }
-        if (remainingConversions === 0) break;
-      }
-
-      await client.query(
-        'UPDATE player_states SET traits = $1 WHERE id = $2',
-        [JSON.stringify(traits), playerState.id]
+      const counts = await client.query(
+        `SELECT
+           (SELECT COUNT(*)::int FROM player_states WHERE game_id = $1) AS total,
+           (SELECT COUNT(DISTINCT data->>'playerId')::int FROM event_logs WHERE game_id = $1 AND event_type = 'final_submitted') AS done`,
+        [gameId]
       );
+      return counts.rows[0].done >= counts.rows[0].total;
+    });
 
-      await client.query('COMMIT');
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
+    const roomId = await getRoomId(gameId);
+    if (this.io && roomId) this.io.to(roomId).emit('final-submitted', { playerId });
+
+    if (allSubmitted) {
+      const results = await this.calculateFinalScore(gameId);
+      if (this.io && roomId) this.io.to(roomId).emit('final-results', { gameId, results });
     }
+    return { allSubmitted };
   }
 
-  // 최종 점수 계산
-  async calculateFinalScore(gameId: string): Promise<Array<{
-    playerId: string;
-    totalScore: number;
-    breakdown: any;
-    money: number;
-    memoryScore: number;
-    purchasedCards: any[];
-    travelCard: any;
-    rank: number;
-  }>> {
-    const client = await pool.connect();
-    try {
-      // 중복 실행 방지: 이미 finished 상태인지 확인
-      const statusCheck = await client.query(
-        'SELECT status FROM games WHERE id = $1',
+  async getSubmittedPlayers(gameId: string, client: any = pool): Promise<string[]> {
+    const r = await client.query(
+      `SELECT DISTINCT data->>'playerId' AS player_id FROM event_logs WHERE game_id = $1 AND event_type = 'final_submitted'`,
+      [gameId]
+    );
+    return r.rows.map((row: any) => row.player_id);
+  }
+
+  private async hasSubmitted(client: any, gameId: string, playerId: string): Promise<boolean> {
+    return (await this.getSubmittedPlayers(gameId, client)).includes(playerId);
+  }
+
+  /** 모든 제출이 끝난 뒤 한 번만 점수를 확정한다 (중복 호출 시 저장된 결과 반환) */
+  async calculateFinalScore(gameId: string): Promise<any[]> {
+    const computed = await withTransaction(async (client) => {
+      const claim = await client.query(
+        `UPDATE games SET status = 'finished' WHERE id = $1 AND status = 'finalizing' RETURNING id`,
         [gameId]
       );
-      
-      if (statusCheck.rows[0]?.status === 'finished') {
-        console.log('⚠️ 이미 점수 계산이 완료된 게임입니다');
-        // 기존 결과 반환
-        const existingResults = await client.query(
-          `SELECT gr.*, ps.player_id, ps.travel_card_id
-           FROM game_results gr
-           JOIN player_states ps ON gr.player_state_id = ps.id
-           WHERE ps.game_id = $1
-           ORDER BY gr.total_score DESC`,
-          [gameId]
-        );
-        
-        const results = [];
-        for (const row of existingResults.rows) {
-          // 여행지 카드 조회
-          let travelCard = null;
-          if (row.travel_card_id) {
-            const cardResult = await client.query(
-              'SELECT * FROM cards WHERE id = $1',
-              [row.travel_card_id]
-            );
-            travelCard = cardResult.rows[0] || null;
-          }
-          
-          results.push({
-            playerId: row.player_id,
-            totalScore: row.total_score,
-            breakdown: row.breakdown,
-            money: 0,
-            memoryScore: 0,
-            purchasedCards: [],
-            travelCard,
-            rank: results.length + 1
-          });
-        }
-        
-        return results;
+      if (claim.rows.length === 0) return null;
+
+      const players = await client.query(
+        `SELECT ps.*, u.nickname FROM player_states ps
+           JOIN players p ON p.id = ps.player_id JOIN users u ON u.id = p.user_id
+          WHERE ps.game_id = $1 ORDER BY ps.turn_order`,
+        [gameId]
+      );
+      const submissions = await client.query(
+        `SELECT data FROM event_logs WHERE game_id = $1 AND event_type = 'final_submitted'`,
+        [gameId]
+      );
+      const byPlayer = new Map<string, any>();
+      for (const row of submissions.rows) {
+        const data = parseJSON<any>(row.data, {});
+        byPlayer.set(data.playerId, data);
       }
-      
-      console.log('📊 최종 점수 계산 시작...');
-      
-      // 플레이어 수 확인 (2인 전용 규칙)
-      const playerCountResult = await client.query(
-        'SELECT COUNT(*) as count FROM player_states WHERE game_id = $1',
-        [gameId]
-      );
-      const playerCount = parseInt(playerCountResult.rows[0].count);
-      const is2Player = playerCount === 2;
+      if (byPlayer.size < players.rows.length) throw new Error('아직 모든 플레이어가 최종 제출을 하지 않았습니다');
 
-      // 공동 계획 정산 (2인 전용: 패널티 없음)
-      const jointResult = await jointPlanService.finalizeJointPlan(gameId, is2Player);
-
-      // 모든 플레이어 점수 계산
-      const playersResult = await client.query(
-        'SELECT * FROM player_states WHERE game_id = $1',
-        [gameId]
-      );
-
-      const results: Array<{
-        playerId: string;
-        totalScore: number;
-        breakdown: any;
-        money: number;
-        memoryScore: number;
-        purchasedCards: any[];
-        travelCard: any;
-        rank: number;
-      }> = [];
-
-      for (const playerState of playersResult.rows) {
-        const traits = playerState.traits;
-
-        // 플레이어의 여행지 카드 배수 조회
-        let multipliers = { taste: 1, history: 1, nature: 1, culture: 1, leisure: 1, water: 1 };
-        if (playerState.travel_card_id) {
-          const travelCardResult = await client.query(
-            'SELECT metadata FROM cards WHERE id = $1',
-            [playerState.travel_card_id]
-          );
-          if (travelCardResult.rows.length > 0) {
-            const metadata = typeof travelCardResult.rows[0].metadata === 'string'
-              ? JSON.parse(travelCardResult.rows[0].metadata)
-              : travelCardResult.rows[0].metadata;
-            multipliers = metadata.multipliers || multipliers;
-          }
+      // 9.2 공동 목표: 비공개 기여액 동시 공개
+      for (const p of players.rows) {
+        const amount = byPlayer.get(p.player_id)?.contribution || 0;
+        if (amount > 0) {
+          await client.query('INSERT INTO joint_plan_contributions (game_id, player_state_id, amount) VALUES ($1, $2, $3)', [
+            gameId,
+            p.id,
+            amount,
+          ]);
         }
+      }
+      const joint = await jointPlanService.finalizeJointPlan(client, gameId);
 
-        // 특성 점수 × 배수
-        const tasteScore = (traits.taste || 0) * (multipliers.taste || 1);
-        const historyScore = (traits.history || 0) * (multipliers.history || 1);
-        const natureScore = (traits.nature || 0) * (multipliers.nature || 1);
-        const cultureScore = (traits.culture || 0) * (multipliers.culture || 1);
-        const leisureScore = (traits.leisure || 0) * (multipliers.leisure || 1);
-        const waterScore = (traits.water || 0) * (multipliers.water || 1);
-        const memoryScore = traits.memory || 0;
+      const results = [];
+      for (const p of players.rows) {
+        const fresh = await client.query('SELECT traits, money FROM player_states WHERE id = $1', [p.id]);
+        const travel = await client.query(
+          `SELECT c.* FROM purchased pu JOIN cards c ON c.id = pu.card_id
+            WHERE pu.player_state_id = $1 AND c.type = 'travel' LIMIT 1`,
+          [p.id]
+        );
+        const travelCard = travel.rows[0] || null;
+        const multipliers = multipliersFromTravelCard(travelCard);
 
-        const totalScore = tasteScore + historyScore + natureScore + cultureScore + leisureScore + waterScore + memoryScore;
+        // 9.3 비주류 특성 변환 (요청 횟수를 가능한 범위로 제한)
+        let traits = parseJSON<Traits>(fresh.rows[0].traits, {});
+        const requested = byPlayer.get(p.player_id)?.conversions || 0;
+        const conversions = Math.min(requested, maxConversions(traits, multipliers));
+        traits = applyConversions(traits, multipliers, conversions);
+        await client.query('UPDATE player_states SET traits = $1 WHERE id = $2', [JSON.stringify(traits), p.id]);
 
+        const score = scorePlayer(traits, multipliers);
+        const purchased = await client.query(
+          `SELECT c.id, c.code, c.name, c.type, c.cost, c.effects FROM purchased pu JOIN cards c ON c.id = pu.card_id
+            WHERE pu.player_state_id = $1 AND c.type <> 'travel' ORDER BY pu.purchased_at`,
+          [p.id]
+        );
         const breakdown = {
-          taste: { base: traits.taste, multiplier: multipliers.taste || 1, score: tasteScore },
-          history: { base: traits.history, multiplier: multipliers.history || 1, score: historyScore },
-          nature: { base: traits.nature, multiplier: multipliers.nature || 1, score: natureScore },
-          culture: { base: traits.culture, multiplier: multipliers.culture || 1, score: cultureScore },
-          leisure: { base: traits.leisure, multiplier: multipliers.leisure || 1, score: leisureScore },
-          water: { base: traits.water, multiplier: multipliers.water || 1, score: waterScore },
-          memory: { base: traits.memory, score: memoryScore },
-          jointPlan: jointResult
+          ...score.traits,
+          memory: { base: score.memoryScore, score: score.memoryScore },
+          traitScore: score.traitScore,
+          conversions,
+          contribution: byPlayer.get(p.player_id)?.contribution || 0,
+          jointPlan: joint,
+          nickname: p.nickname,
+          money: fresh.rows[0].money,
+          travelCard,
+          purchasedCards: purchased.rows,
         };
-
-        // 결과 저장
         await client.query(
           'INSERT INTO game_results (game_id, player_state_id, total_score, breakdown) VALUES ($1, $2, $3, $4)',
-          [gameId, playerState.id, totalScore, JSON.stringify(breakdown)]
+          [gameId, p.id, score.totalScore, JSON.stringify(breakdown)]
         );
-
-        // 구매한 카드 조회
-        const purchasedResult = await client.query(
-          `SELECT c.* FROM purchased p
-           JOIN cards c ON p.card_id = c.id
-           WHERE p.player_state_id = $1`,
-          [playerState.id]
-        );
-
-        // 여행지 카드 조회
-        let travelCard = null;
-        if (playerState.travel_card_id) {
-          const travelCardResult = await client.query(
-            'SELECT * FROM cards WHERE id = $1',
-            [playerState.travel_card_id]
-          );
-          travelCard = travelCardResult.rows[0] || null;
-        }
-
-        results.push({
-          playerId: playerState.player_id,
-          totalScore,
-          breakdown,
-          money: playerState.money,
-          memoryScore,
-          purchasedCards: purchasedResult.rows,
-          travelCard,
-          rank: 0 // 임시값, 아래에서 설정
-        });
+        results.push(this.toResult(p.player_id, score.totalScore, breakdown));
       }
+      await logEvent(client, gameId, 'game_finished', { joint: { success: joint.success, total: joint.total } });
+      return rankPlayers(results);
+    });
 
-      // 순위 정렬 (동률 규정: 1순위 추억, 2순위 TC)
-      results.sort((a, b) => {
-        if (b.totalScore !== a.totalScore) {
-          return b.totalScore - a.totalScore;
-        }
-        if (b.memoryScore !== a.memoryScore) {
-          return b.memoryScore - a.memoryScore;
-        }
-        return b.money - a.money;
-      });
-      
-      results.forEach((r, index) => {
-        r.rank = index + 1;
-      });
-
-      // 게임 상태 업데이트
-      await client.query(
-        'UPDATE games SET status = $1 WHERE id = $2',
-        ['finished', gameId]
-      );
-
-      return results;
-    } finally {
-      client.release();
-    }
+    return computed ?? this.getResults(gameId);
   }
 
-  // 소프트 리셋
+  async getResults(gameId: string): Promise<any[]> {
+    const rows = await pool.query(
+      `SELECT gr.total_score, gr.breakdown, ps.player_id FROM game_results gr
+         JOIN player_states ps ON ps.id = gr.player_state_id WHERE gr.game_id = $1`,
+      [gameId]
+    );
+    return rankPlayers(rows.rows.map((r: any) => this.toResult(r.player_id, r.total_score, parseJSON(r.breakdown, {}))));
+  }
+
+  private toResult(playerId: string, totalScore: number, breakdown: any) {
+    return {
+      playerId,
+      nickname: breakdown.nickname,
+      totalScore,
+      memoryScore: breakdown.memory?.score || 0,
+      money: breakdown.money || 0,
+      breakdown,
+      purchasedCards: breakdown.purchasedCards || [],
+      travelCard: breakdown.travelCard || null,
+    };
+  }
+
+  // 소프트 리셋 (같은 방에서 다시 하기)
   async softReset(roomId: string): Promise<void> {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-
-      // 현재 게임 조회
-      const gameResult = await client.query(
-        'SELECT id FROM games WHERE room_id = $1 ORDER BY created_at DESC LIMIT 1',
-        [roomId]
-      );
-
-      if (gameResult.rows.length === 0) {
-        throw new Error('게임을 찾을 수 없습니다');
-      }
-
-      const gameId = gameResult.rows[0].id;
-
-      // 게임 관련 데이터 삭제 (CASCADE로 자동 삭제됨)
-      await client.query('DELETE FROM games WHERE id = $1', [gameId]);
-
-      // 방 상태를 대기로 변경
-      await client.query(
-        'UPDATE rooms SET status = $1 WHERE id = $2',
-        ['waiting', roomId]
-      );
-
-      // 플레이어 목록은 유지됨
-
-      await client.query('COMMIT');
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
+    await withTransaction(async (client) => {
+      await client.query('DELETE FROM games WHERE room_id = $1', [roomId]);
+      await client.query('UPDATE rooms SET status = $1 WHERE id = $2', ['waiting', roomId]);
+    });
   }
 
   // 결과 창 닫기 신호 수집
-  private resultClosedSignals: Map<string, Set<string>> = new Map(); // gameId -> Set<playerId>
+  private resultClosedSignals: Map<string, Set<string>> = new Map();
 
   async recordResultClosed(gameId: string, playerId: string): Promise<boolean> {
-    if (!this.resultClosedSignals.has(gameId)) {
-      this.resultClosedSignals.set(gameId, new Set());
-    }
-
+    if (!this.resultClosedSignals.has(gameId)) this.resultClosedSignals.set(gameId, new Set());
     const signals = this.resultClosedSignals.get(gameId)!;
     signals.add(playerId);
 
-    // 모든 플레이어가 닫았는지 확인
-    const playerCountResult = await pool.query(
-      'SELECT COUNT(*) as count FROM player_states WHERE game_id = $1',
+    const humans = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM player_states ps JOIN players p ON p.id = ps.player_id
+        WHERE ps.game_id = $1 AND NOT COALESCE(p.is_ai, false)`,
       [gameId]
     );
-    const totalPlayers = parseInt(playerCountResult.rows[0].count);
-
-    if (signals.size >= totalPlayers) {
+    if (signals.size >= humans.rows[0].n) {
       this.resultClosedSignals.delete(gameId);
-      return true; // 모두 닫음
+      return true;
     }
-
     return false;
   }
 }

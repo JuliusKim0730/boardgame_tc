@@ -80,9 +80,9 @@ function CardDrawModal({ isOpen, card, onClose }: Props) {
             <div className="card-draw-name">{card.name}</div>
             <div className="card-draw-code">{card.code}</div>
             
-            {card.cost && (
+            {(card.cost ?? 0) > 0 && (
               <div className="card-draw-cost">
-                💵 {card.cost.toLocaleString()}TC
+                💵 {(card.cost ?? 0).toLocaleString()}TC
               </div>
             )}
             

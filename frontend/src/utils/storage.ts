@@ -93,3 +93,39 @@ export function safeClear(): boolean {
     return false;
   }
 }
+
+/**
+ * 진행 중인 방/게임 세션 (탭별 sessionStorage) - 새로고침해도 게임으로 복귀
+ * 탭마다 따로 저장되므로 한 브라우저에서 여러 탭으로 멀티플레이 테스트도 가능하다.
+ */
+const SESSION_KEY = 'fourteen-nights-session';
+
+export interface GameSession {
+  screen: 'waiting' | 'game';
+  roomId: string;
+  roomCode: string;
+  gameId: string;
+  playerId: string;
+  userId: string;
+  isHost: boolean;
+}
+
+export function loadSession(): GameSession | null {
+  try {
+    const raw = getSafeSessionStorage()?.getItem(SESSION_KEY);
+    return raw ? (JSON.parse(raw) as GameSession) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveSession(session: GameSession | null): void {
+  try {
+    const storage = getSafeSessionStorage();
+    if (!storage) return;
+    if (session) storage.setItem(SESSION_KEY, JSON.stringify(session));
+    else storage.removeItem(SESSION_KEY);
+  } catch {
+    // 저장 실패는 무시 (새로고침 복귀만 불가)
+  }
+}

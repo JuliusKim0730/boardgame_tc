@@ -12,20 +12,25 @@ interface Card {
 
 interface Props {
   isOpen: boolean;
+  options?: Card[]; // CH17: 현재 공동 목표 + 새로 본 1장
   onSelect: (cardId: string) => void;
   onCancel: () => void;
 }
 
-function JointPlanSelectModal({ isOpen, onSelect, onCancel }: Props) {
+function JointPlanSelectModal({ isOpen, options, onSelect, onCancel }: Props) {
   const [jointPlanCards, setJointPlanCards] = useState<Card[]>([]);
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (isOpen) {
+    if (!isOpen) return;
+    if (options && options.length > 0) {
+      setJointPlanCards(options);
+      setLoading(false);
+    } else {
       loadJointPlanCards();
     }
-  }, [isOpen]);
+  }, [isOpen, options]);
 
   const loadJointPlanCards = async () => {
     try {

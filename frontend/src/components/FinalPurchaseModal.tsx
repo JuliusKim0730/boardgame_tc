@@ -1,11 +1,23 @@
-import { useState, useEffect } from 'react';
+import { useMemo, useState } from 'react';
 import './FinalPurchaseModal.css';
+import {
+  TRAIT_KEYS,
+  TRAIT_LABELS,
+  addEffects,
+  bestPurchase,
+  cardPoints,
+  maxConversions,
+  multipliersOf,
+  scoreOf,
+  type Traits,
+} from '../utils/scoring';
 
 interface Card {
   id: string;
   code: string;
   name: string;
   cost: number;
+  type?: string;
   effects: any;
 }
 
@@ -15,74 +27,90 @@ interface TravelCard {
   metadata: any;
 }
 
+export interface FinalSubmission {
+  cardIds: string[];
+  contribution: number;
+  conversions: number;
+}
+
 interface Props {
   isOpen: boolean;
   handCards: Card[];
   currentMoney: number;
   travelCard?: TravelCard;
-  onPurchase: (cardIds: string[]) => void;
+  traits?: Traits;
+  jointPlan?: { card: any; total: number; target: number } | null;
+  playerCount?: number;
+  onPurchase: (submission: FinalSubmission) => void;
 }
 
-function FinalPurchaseModal({ isOpen, handCards, currentMoney, travelCard, onPurchase }: Props) {
+/**
+ * 최종 결산 (룰북 9): 일반 계획 카드 구매 + 공동 목표 비공개 기여 + 비주류 특성 변환을 한 번에 제출
+ */
+function FinalPurchaseModal({
+  isOpen,
+  handCards,
+  currentMoney,
+  travelCard,
+  traits = {},
+  jointPlan,
+  playerCount = 3,
+  onPurchase,
+}: Props) {
   const [selectedCards, setSelectedCards] = useState<string[]>([]);
-  const [totalCost, setTotalCost] = useState(0);
+  const [contribution, setContribution] = useState(0);
+  const [conversions, setConversions] = useState(0);
+  const [submitting, setSubmitting] = useState(false);
 
-  useEffect(() => {
-    const cost = selectedCards.reduce((sum, cardId) => {
-      const card = handCards.find(c => c.id === cardId);
-      return sum + (card?.cost || 0);
-    }, 0);
-    setTotalCost(cost);
-  }, [selectedCards, handCards]);
+  const multipliers = multipliersOf(travelCard);
+  const planCards = handCards.filter((c) => !c.type || c.type === 'plan');
 
-  const toggleCard = (cardId: string) => {
-    if (selectedCards.includes(cardId)) {
-      setSelectedCards(selectedCards.filter(id => id !== cardId));
-    } else {
-      setSelectedCards([...selectedCards, cardId]);
+  const totalCost = selectedCards.reduce((sum, id) => sum + (planCards.find((c) => c.id === id)?.cost || 0), 0);
+  const remaining = currentMoney - totalCost - contribution;
+
+  const projected = useMemo(() => {
+    let next = { ...traits };
+    for (const id of selectedCards) {
+      const card = planCards.find((c) => c.id === id);
+      if (card) next = addEffects(next, card.effects);
     }
-  };
-
-  const handlePurchase = () => {
-    if (totalCost > currentMoney) {
-      alert('돈이 부족합니다!');
-      return;
-    }
-    onPurchase(selectedCards);
-  };
+    return next;
+  }, [traits, selectedCards, planCards]);
+  const maxConv = maxConversions(projected, multipliers);
+  const conv = Math.min(conversions, maxConv);
+  const projectedScore = scoreOf(projected, multipliers) - conv * 2;
 
   if (!isOpen) return null;
 
-  const traitNames: { [key: string]: string } = {
-    taste: '맛',
-    history: '역사',
-    nature: '자연',
-    culture: '문화',
-    leisure: '여가',
-    water: '물',
-    memory: '추억'
+  const toggleCard = (cardId: string) => {
+    setSelectedCards((prev) => (prev.includes(cardId) ? prev.filter((id) => id !== cardId) : [...prev, cardId]));
   };
 
-  // 여행지 카드의 가중치 정보 추출
-  const getMultipliers = () => {
-    if (!travelCard?.metadata) return {};
-    const metadata = typeof travelCard.metadata === 'string' 
-      ? JSON.parse(travelCard.metadata) 
-      : travelCard.metadata;
-    return metadata.multipliers || {};
+  const recommend = () => {
+    const items = planCards.map((c) => ({ id: c.id, cost: c.cost, value: cardPoints(c.effects, multipliers) }));
+    setSelectedCards(bestPurchase(items, currentMoney - contribution).map((c) => c.id));
   };
 
-  const multipliers = getMultipliers();
+  const handleSubmit = () => {
+    if (remaining < 0) {
+      alert('TC가 부족합니다!');
+      return;
+    }
+    setSubmitting(true);
+    onPurchase({ cardIds: selectedCards, contribution, conversions: conv });
+  };
+
+  const jointNeeded = jointPlan ? Math.max(0, jointPlan.target - jointPlan.total) : 0;
 
   return (
     <div className="final-purchase-modal-overlay">
       <div className="final-purchase-modal">
-        <h2>🛒 최종 구매</h2>
+        <h2>🧳 최종 결산</h2>
         <p className="modal-description">
-          손패에서 구매할 카드를 선택하세요. 구매한 카드의 특성 점수가 최종 점수에 반영됩니다.
+          ① 구매할 계획 카드 → ② 공동 목표 기여(다른 플레이어에게 비공개, 모두 제출 후 동시 공개) → ③ 비주류 특성 변환 순서로
+          정하고 한 번에 제출합니다. 구매하지 않은 카드는 점수에 들어가지 않습니다.
         </p>
 
-        {/* 여행지 카드 정보 표시 */}
         {travelCard && (
           <div className="travel-card-info-purchase">
             <div className="travel-card-header-purchase">
@@ -90,9 +118,9 @@ function FinalPurchaseModal({ isOpen, handCards, currentMoney, travelCard, onPur
               <span className="travel-name">{travelCard.name}</span>
             </div>
             <div className="travel-multipliers-purchase">
-              {Object.entries(multipliers).map(([trait, mult]: [string, any]) => (
-                <span key={trait} className={`multiplier-tag mult-${mult}`}>
-                  {traitNames[trait] || trait} ×{mult}
+              {TRAIT_KEYS.map((trait) => (
+                <span key={trait} className={`multiplier-tag mult-${multipliers[trait] ?? 1}`}>
+                  {TRAIT_LABELS[trait]} ×{multipliers[trait] ?? 1}
                 </span>
               ))}
             </div>
@@ -101,26 +129,38 @@ function FinalPurchaseModal({ isOpen, handCards, currentMoney, travelCard, onPur
 
         <div className="purchase-info">
           <div className="info-item">
-            <span className="label">💰 보유 금액:</span>
+            <span className="label">💰 보유</span>
             <span className="value">{currentMoney.toLocaleString()}TC</span>
           </div>
           <div className="info-item">
-            <span className="label">🛒 구매 비용:</span>
-            <span className={`value ${totalCost > currentMoney ? 'over-budget' : ''}`}>
-              {totalCost.toLocaleString()}TC
-            </span>
+            <span className="label">🛒 구매</span>
+            <span className="value">{totalCost.toLocaleString()}TC</span>
           </div>
           <div className="info-item">
-            <span className="label">💵 남은 금액:</span>
-            <span className="value">{(currentMoney - totalCost).toLocaleString()}TC</span>
+            <span className="label">🤝 기여</span>
+            <span className="value">{contribution.toLocaleString()}TC</span>
+          </div>
+          <div className="info-item">
+            <span className="label">💵 남는 TC</span>
+            <span className={`value ${remaining < 0 ? 'over-budget' : ''}`}>{remaining.toLocaleString()}TC</span>
+          </div>
+          <div className="info-item">
+            <span className="label">⭐ 예상 점수</span>
+            <span className="value">{projectedScore}점</span>
           </div>
         </div>
 
+        <h3 className="final-section-title">
+          ① 계획 카드 구매
+          <button type="button" className="btn btn-secondary btn-small" onClick={recommend}>
+            최적 조합 추천
+          </button>
+        </h3>
         <div className="cards-grid">
-          {handCards.length === 0 ? (
+          {planCards.length === 0 ? (
             <p className="empty-message">구매할 카드가 없습니다</p>
           ) : (
-            handCards.map(card => (
+            planCards.map((card) => (
               <div
                 key={card.id}
                 className={`purchase-card ${selectedCards.includes(card.id) ? 'selected' : ''}`}
@@ -132,36 +172,65 @@ function FinalPurchaseModal({ isOpen, handCards, currentMoney, travelCard, onPur
                 </div>
                 <div className="card-cost">{card.cost.toLocaleString()}TC</div>
                 <div className="card-effects">
-                  {Object.entries(card.effects).map(([key, value]) => {
-                    const traitName = traitNames[key] || key;
-                    return (
-                      <span key={`${card.id}-${key}`} className="effect-badge">
-                        {key === 'money' ? '💰' : '✨'} {traitName} +{String(value)}
-                      </span>
-                    );
-                  })}
+                  {Object.entries(card.effects).map(([key, value]) => (
+                    <span key={`${card.id}-${key}`} className="effect-badge">
+                      ✨ {TRAIT_LABELS[key as keyof typeof TRAIT_LABELS] || key} +{String(value)}
+                    </span>
+                  ))}
                 </div>
-                {selectedCards.includes(card.id) && (
-                  <div className="selected-badge">✓ 선택됨</div>
-                )}
+                <div className="card-points">내 점수 +{cardPoints(card.effects, multipliers)}</div>
+                {selectedCards.includes(card.id) && <div className="selected-badge">✓ 선택됨</div>}
               </div>
             ))
           )}
         </div>
 
-        <div className="modal-actions">
-          <button
-            className="btn btn-primary"
-            onClick={handlePurchase}
-            disabled={totalCost > currentMoney}
-          >
-            구매 완료 ({selectedCards.length}장)
+        <h3 className="final-section-title">② 공동 목표 기여</h3>
+        {jointPlan?.card ? (
+          <div className="final-joint">
+            <p>
+              <strong>{jointPlan.card.name}</strong> — 목표 {jointPlan.target.toLocaleString()}TC, 현재{' '}
+              {jointPlan.total.toLocaleString()}TC (남은 금액 {jointNeeded.toLocaleString()}TC)
+            </p>
+            <p className="final-hint">
+              달성 시 전원 카드 효과 + 최다 기여자 보너스.{' '}
+              {playerCount >= 3 ? '실패하면 가장 적게 낸 플레이어 추억 -2.' : '2인 플레이는 실패 패널티가 없습니다.'}
+            </p>
+            <div className="final-stepper">
+              <button type="button" onClick={() => setContribution(Math.max(0, contribution - 500))} disabled={contribution <= 0}>
+                −500
+              </button>
+              <span>{contribution.toLocaleString()}TC</span>
+              <button
+                type="button"
+                onClick={() => setContribution(contribution + 500)}
+                disabled={currentMoney - totalCost - contribution < 500}
+              >
+                +500
+              </button>
+            </div>
+          </div>
+        ) : (
+          <p className="final-hint">공동 목표 카드가 없습니다</p>
+        )}
+
+        <h3 className="final-section-title">③ 비주류 특성 변환 (선택)</h3>
+        <p className="final-hint">
+          가중치 1배 특성 3점 → 추억 +1. 총점은 변환 1회당 2점 줄지만, 동점일 때 추억이 많은 쪽이 이깁니다. (가능 {maxConv}회)
+        </p>
+        <div className="final-stepper">
+          <button type="button" onClick={() => setConversions(Math.max(0, conv - 1))} disabled={conv <= 0}>
+            −1
           </button>
-          <button
-            className="btn btn-secondary"
-            onClick={() => onPurchase([])}
-          >
-            구매하지 않음
+          <span>{conv}회</span>
+          <button type="button" onClick={() => setConversions(conv + 1)} disabled={conv >= maxConv}>
+            +1
+          </button>
+        </div>
+
+        <div className="modal-actions">
+          <button className="btn btn-primary" onClick={handleSubmit} disabled={remaining < 0 || submitting}>
+            {submitting ? '제출 중...' : `제출하기 (카드 ${selectedCards.length}장 · 기여 ${contribution.toLocaleString()}TC)`}
           </button>
         </div>
       </div>

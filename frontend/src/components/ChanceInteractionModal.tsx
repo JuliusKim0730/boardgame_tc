@@ -6,12 +6,14 @@ interface Player {
   nickname: string;
   position: number;
   money: number;
+  hand_cards?: Card[];
 }
 
 interface Card {
   id: string;
   name: string;
   cost?: number;
+  type?: string;
 }
 
 interface Props {
@@ -32,10 +34,8 @@ function ChanceInteractionModal({
   players, 
   currentPlayerId,
   handCards = [],
-  targetHandCards = [],
   jointPlanCards = [],
-  onResponse, 
-  onCancel 
+  onResponse,
 }: Props) {
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
@@ -44,6 +44,9 @@ function ChanceInteractionModal({
   if (!isOpen) return null;
 
   const otherPlayers = players.filter(p => p.player_id !== currentPlayerId);
+  const isPlan = (c: Card) => !c.type || c.type === 'plan';
+  const myPlanCards = handCards.filter(isPlan);
+  const targetHandCards = (players.find(p => p.player_id === selectedPlayerId)?.hand_cards || []).filter(isPlan);
 
   const getTitle = () => {
     switch (type) {
@@ -71,15 +74,15 @@ function ChanceInteractionModal({
       case 'shared_house':
         return '함께 집안일을 할 플레이어를 선택하세요. 두 플레이어 모두 집안일 카드의 수익을 받습니다.';
       case 'shared_invest':
-        return '함께 투자할 플레이어를 선택하세요. 두 플레이어 모두 여행 지원 카드의 효과를 받습니다.';
+        return '함께할 플레이어를 선택하세요. 여행 지원 카드 1장의 효과를 두 플레이어가 똑같이 받습니다.';
       case 'purchase_request':
-        return '1,000TC에 계획 카드를 판매하시겠습니까?';
+        return '플레이어를 고른 뒤, 1,000TC에 사 올 계획 카드를 선택하세요. (카드 비용은 최종 구매 때 따로 지불)';
       case 'card_exchange':
         return '계획 카드를 교환할 플레이어를 선택하세요.';
       case 'swap_position':
         return '위치를 교환할 플레이어를 선택하세요.';
       case 'buddy_action':
-        return '함께 행동할 플레이어를 선택하세요. 두 플레이어 모두 추가 행동 1회를 수행할 수 있습니다.';
+        return '지목할 플레이어를 선택하세요. 나는 지금 추가 행동 1회, 지목한 플레이어는 결심 토큰 1개를 받습니다.';
       case 'select_joint_plan':
         return '공동 목표로 사용할 카드를 선택하세요. 선택한 카드가 게임의 공동 목표가 됩니다.';
       default:
@@ -89,8 +92,11 @@ function ChanceInteractionModal({
 
   const handleConfirm = () => {
     if (type === 'purchase_request') {
-      // 구매 요청 수락/거절
-      onResponse({ accepted: true, targetId: selectedPlayerId, cardId: selectedCardId });
+      if (!selectedPlayerId || !selectedTargetCardId) {
+        alert('플레이어와 카드를 선택해주세요');
+        return;
+      }
+      onResponse({ accepted: true, targetId: selectedPlayerId, cardId: selectedTargetCardId });
     } else if (type === 'card_exchange') {
       // 카드 교환
       if (!selectedPlayerId || !selectedCardId || !selectedTargetCardId) {
@@ -135,7 +141,7 @@ function ChanceInteractionModal({
           <p className="interaction-message">{getMessage()}</p>
           
           {/* 플레이어 선택 */}
-          {(type !== 'purchase_request' && type !== 'select_joint_plan') && (
+          {type !== 'select_joint_plan' && (
             <div className="player-selection">
               <h3>플레이어 선택</h3>
               <div className="player-list">
@@ -158,11 +164,11 @@ function ChanceInteractionModal({
           )}
 
           {/* 카드 교환: 내 카드 선택 */}
-          {type === 'card_exchange' && handCards.length > 0 && (
+          {type === 'card_exchange' && myPlanCards.length > 0 && (
             <div className="card-selection">
               <h3>내 카드 선택</h3>
               <div className="card-list">
-                {handCards.map(card => (
+                {myPlanCards.map(card => (
                   <div
                     key={card.id}
                     className={`card-item ${selectedCardId === card.id ? 'selected' : ''}`}
@@ -177,34 +183,15 @@ function ChanceInteractionModal({
           )}
 
           {/* 카드 교환: 상대 카드 선택 */}
-          {type === 'card_exchange' && selectedPlayerId && targetHandCards.length > 0 && (
+          {(type === 'card_exchange' || type === 'purchase_request') && selectedPlayerId && targetHandCards.length > 0 && (
             <div className="card-selection">
-              <h3>상대 카드 선택</h3>
+              <h3>{type === 'purchase_request' ? '사 올 카드 선택' : '상대 카드 선택'}</h3>
               <div className="card-list">
                 {targetHandCards.map(card => (
                   <div
                     key={card.id}
                     className={`card-item ${selectedTargetCardId === card.id ? 'selected' : ''}`}
                     onClick={() => setSelectedTargetCardId(card.id)}
-                  >
-                    <div className="card-name">{card.name}</div>
-                    {card.cost && <div className="card-cost">{card.cost.toLocaleString()}TC</div>}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* 구매 요청: 카드 선택 */}
-          {type === 'purchase_request' && handCards.length > 0 && (
-            <div className="card-selection">
-              <h3>판매할 카드 선택</h3>
-              <div className="card-list">
-                {handCards.map(card => (
-                  <div
-                    key={card.id}
-                    className={`card-item ${selectedCardId === card.id ? 'selected' : ''}`}
-                    onClick={() => setSelectedCardId(card.id)}
                   >
                     <div className="card-name">{card.name}</div>
                     {card.cost && <div className="card-cost">{card.cost.toLocaleString()}TC</div>}
@@ -235,33 +222,24 @@ function ChanceInteractionModal({
         </div>
         
         <div className="modal-footer">
-          {type === 'purchase_request' ? (
-            <>
-              <button className="btn-reject" onClick={handleReject}>
-                거절
-              </button>
-              <button 
-                className="btn-confirm" 
-                onClick={handleConfirm}
-                disabled={!selectedCardId}
-              >
-                판매 (1,000TC)
-              </button>
-            </>
-          ) : (
-            <>
-              <button className="btn-cancel" onClick={onCancel}>
-                취소
-              </button>
-              <button 
-                className="btn-confirm" 
-                onClick={handleConfirm}
-                disabled={type === 'select_joint_plan' ? !selectedCardId : !selectedPlayerId}
-              >
-                확인
-              </button>
-            </>
-          )}
+          <button className="btn-cancel" onClick={handleReject}>
+            맡기기 (자동 선택)
+          </button>
+          <button
+            className="btn-confirm"
+            onClick={handleConfirm}
+            disabled={
+              type === 'select_joint_plan'
+                ? !selectedCardId
+                : type === 'purchase_request'
+                  ? !selectedTargetCardId
+                  : type === 'card_exchange'
+                    ? !selectedCardId || !selectedTargetCardId
+                    : !selectedPlayerId
+            }
+          >
+            {type === 'purchase_request' ? '구매 (1,000TC)' : '확인'}
+          </button>
         </div>
       </div>
     </div>

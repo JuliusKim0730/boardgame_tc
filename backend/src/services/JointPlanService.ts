@@ -1,194 +1,96 @@
 import { pool } from '../db/pool';
+import { addEffects, jointPenaltyTargets, parseJSON, Traits, TRAIT_KEYS } from '../game/rules';
 
+/**
+ * 공동 목표 (룰북 8): 14일차 이후 각자 비밀리에 TC를 정해 동시에 공개한다.
+ * 플레이어별 기여 금액은 최종 제출(GameFinalizationService) 때 joint_plan_contributions에 기록된다.
+ * 게임 도중에는 CH20(공동 목표 지원) 카드만 기여를 추가한다.
+ */
 export class JointPlanService {
-  // 공동 계획 기여
-  async contribute(gameId: string, playerId: string, amount: number): Promise<void> {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-
-      // 플레이어 상태 조회
-      const stateResult = await client.query(
-        'SELECT id, money FROM player_states WHERE game_id = $1 AND player_id = $2',
-        [gameId, playerId]
-      );
-
-      if (stateResult.rows.length === 0) {
-        throw new Error('플레이어를 찾을 수 없습니다');
-      }
-
-      const playerState = stateResult.rows[0];
-
-      if (playerState.money < amount) {
-        throw new Error('돈이 부족합니다');
-      }
-
-      // 돈 차감 (원자적 트랜잭션)
-      await client.query(
-        'UPDATE player_states SET money = money - $1 WHERE id = $2',
-        [amount, playerState.id]
-      );
-
-      // 기여 기록
-      await client.query(
-        'INSERT INTO joint_plan_contributions (game_id, player_state_id, amount) VALUES ($1, $2, $3)',
-        [gameId, playerState.id, amount]
-      );
-
-      // 이벤트 로그
-      await client.query(
-        'INSERT INTO event_logs (game_id, event_type, data) VALUES ($1, $2, $3)',
-        [gameId, 'joint_plan_contribution', JSON.stringify({ playerId, amount })]
-      );
-
-      await client.query('COMMIT');
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
-
-  // 공동 계획 현황 조회
-  async getContributionStatus(gameId: string): Promise<any> {
-    const result = await pool.query(
-      `SELECT 
-        ps.player_id,
-        COALESCE(SUM(jpc.amount), 0) as total_contribution
-       FROM player_states ps
-       LEFT JOIN joint_plan_contributions jpc ON ps.id = jpc.player_state_id
-       WHERE ps.game_id = $1
-       GROUP BY ps.player_id`,
+  async getContributionStatus(gameId: string, client: any = pool): Promise<any> {
+    const result = await client.query(
+      `SELECT ps.player_id, COALESCE(SUM(jpc.amount), 0)::int AS total_contribution
+         FROM player_states ps
+         LEFT JOIN joint_plan_contributions jpc ON ps.id = jpc.player_state_id
+        WHERE ps.game_id = $1
+        GROUP BY ps.player_id`,
       [gameId]
     );
-
     const contributions = result.rows;
-    const totalAmount = contributions.reduce((sum, c) => sum + parseInt(c.total_contribution), 0);
+    const totalAmount = contributions.reduce((sum: number, c: any) => sum + Number(c.total_contribution), 0);
 
-    // 공동 계획 카드 목표 금액 조회
-    const gameResult = await pool.query(
-      `SELECT g.joint_plan_card_id, c.cost 
-       FROM games g
-       JOIN cards c ON g.joint_plan_card_id = c.id
-       WHERE g.id = $1`,
+    const card = await client.query(
+      `SELECT c.* FROM games g JOIN cards c ON g.joint_plan_card_id = c.id WHERE g.id = $1`,
       [gameId]
     );
-
-    const targetAmount = gameResult.rows[0]?.cost || 0;
-
+    const targetAmount = card.rows[0]?.cost || 0;
     return {
       contributions,
       totalAmount,
       targetAmount,
-      isSuccess: totalAmount >= targetAmount
+      card: card.rows[0] || null,
+      isSuccess: targetAmount > 0 && totalAmount >= targetAmount,
     };
   }
 
-  // 공동 계획 최종 정산
-  async finalizeJointPlan(gameId: string, is2Player: boolean = false): Promise<any> {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
+  /**
+   * 공동 목표 판정 (최종 점수 계산 트랜잭션 안에서 호출)
+   *  - 성공: 전원에게 카드 효과, 최다 기여자에게 카드 보너스
+   *  - 실패: 3인 이상이면 최소 기여자 추억 -2 (2인 면제)
+   */
+  async finalizeJointPlan(client: any, gameId: string): Promise<any> {
+    const status = await this.getContributionStatus(gameId, client);
+    const card = status.card;
+    const contributions = status.contributions.map((c: any) => ({
+      playerId: c.player_id as string,
+      amount: Number(c.total_contribution),
+    }));
 
-      const status = await this.getContributionStatus(gameId);
-
-      // 플레이어 수 확인
-      const playerCountResult = await client.query(
-        'SELECT COUNT(*) as count FROM player_states WHERE game_id = $1',
-        [gameId]
-      );
-      const playerCount = parseInt(playerCountResult.rows[0].count);
-
-      // 공동 계획 카드 효과 조회
-      const cardResult = await client.query(
-        `SELECT c.* FROM games g
-         JOIN cards c ON g.joint_plan_card_id = c.id
-         WHERE g.id = $1`,
-        [gameId]
-      );
-      const jointCard = cardResult.rows[0];
-
-      if (status.isSuccess) {
-        // 성공: 모든 플레이어에게 보상
-        for (const contrib of status.contributions) {
-          const traits = jointCard.effects;
-          await client.query(
-            `UPDATE player_states 
-             SET traits = jsonb_set(
-               jsonb_set(
-                 jsonb_set(
-                   jsonb_set(
-                     jsonb_set(
-                       jsonb_set(
-                         jsonb_set(traits, '{taste}', (COALESCE((traits->>'taste')::int, 0) + COALESCE($2, 0))::text::jsonb),
-                       '{history}', (COALESCE((traits->>'history')::int, 0) + COALESCE($3, 0))::text::jsonb),
-                     '{nature}', (COALESCE((traits->>'nature')::int, 0) + COALESCE($4, 0))::text::jsonb),
-                   '{culture}', (COALESCE((traits->>'culture')::int, 0) + COALESCE($5, 0))::text::jsonb),
-                 '{leisure}', (COALESCE((traits->>'leisure')::int, 0) + COALESCE($6, 0))::text::jsonb),
-               '{water}', (COALESCE((traits->>'water')::int, 0) + COALESCE($7, 0))::text::jsonb),
-             '{memory}', (COALESCE((traits->>'memory')::int, 0) + COALESCE($8, 0))::text::jsonb)
-             WHERE game_id = $1 AND player_id = $9`,
-            [
-              gameId,
-              traits.taste || 0,
-              traits.history || 0,
-              traits.nature || 0,
-              traits.culture || 0,
-              traits.leisure || 0,
-              traits.water || 0,
-              traits.memory || 0,
-              contrib.player_id
-            ]
-          );
-        }
-
-        // 최다 기여자 보너스
-        const maxContribution = Math.max(...status.contributions.map((c: any) => parseInt(c.total_contribution)));
-        const topContributors = status.contributions.filter((c: any) => parseInt(c.total_contribution) === maxContribution);
-
-        for (const top of topContributors) {
-          const bonusType = jointCard.metadata?.bonus || 'memory+1';
-          const [trait, value] = bonusType.split('+');
-          
-          await client.query(
-            `UPDATE player_states 
-             SET traits = jsonb_set(traits, $1, ((COALESCE((traits->>$2)::int, 0) + $3)::text::jsonb))
-             WHERE game_id = $4 AND player_id = $5`,
-            [`{${trait}}`, trait, parseInt(value), gameId, top.player_id]
-          );
-        }
-
-        await client.query('COMMIT');
-        return { success: true, topContributors: topContributors.map((c: any) => c.player_id) };
-      } else {
-        // 실패: 패널티 적용 (2인 예외)
-        if (!is2Player && playerCount > 2) {
-          const minContribution = Math.min(...status.contributions.map((c: any) => parseInt(c.total_contribution)));
-          const lowestContributors = status.contributions.filter((c: any) => parseInt(c.total_contribution) === minContribution);
-
-          for (const lowest of lowestContributors) {
-            await client.query(
-              `UPDATE player_states 
-               SET traits = jsonb_set(traits, '{memory}', ((COALESCE((traits->>'memory')::int, 0) - 2)::text::jsonb))
-               WHERE game_id = $1 AND player_id = $2`,
-              [gameId, lowest.player_id]
-            );
-          }
-
-          await client.query('COMMIT');
-          return { success: false, penalizedPlayers: lowestContributors.map((c: any) => c.player_id) };
-        }
-
-        await client.query('COMMIT');
-        return { success: false, penalizedPlayers: [] }; // 2인 예외
+    if (status.isSuccess) {
+      const effects = parseJSON<Record<string, number>>(card.effects, {});
+      for (const c of contributions) {
+        await this.applyTraits(client, gameId, c.playerId, effects);
       }
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
+      const max = Math.max(...contributions.map((c: any) => c.amount));
+      const top = contributions.filter((c: any) => c.amount === max).map((c: any) => c.playerId);
+      const [trait, value] = String(parseJSON<any>(card.metadata, {}).bonus || 'memory+1').split('+');
+      const bonusKey = [...TRAIT_KEYS, 'memory'].includes(trait as any) ? trait : 'memory';
+      for (const playerId of top) {
+        await this.applyTraits(client, gameId, playerId, { [bonusKey]: parseInt(value) || 1 });
+      }
+      return {
+        success: true,
+        cardName: card.name,
+        total: status.totalAmount,
+        target: status.targetAmount,
+        effects,
+        bonus: { trait: bonusKey, value: parseInt(value) || 1 },
+        topContributors: top,
+        contributions,
+      };
     }
+
+    const penalized = jointPenaltyTargets(contributions);
+    for (const playerId of penalized) {
+      await this.applyTraits(client, gameId, playerId, { memory: -2 });
+    }
+    return {
+      success: false,
+      cardName: card?.name,
+      total: status.totalAmount,
+      target: status.targetAmount,
+      penalizedPlayers: penalized,
+      contributions,
+    };
+  }
+
+  private async applyTraits(client: any, gameId: string, playerId: string, effects: Record<string, number>) {
+    const row = await client.query('SELECT id, traits FROM player_states WHERE game_id = $1 AND player_id = $2 FOR UPDATE', [
+      gameId,
+      playerId,
+    ]);
+    const traits = addEffects(parseJSON<Traits>(row.rows[0].traits, {}), effects);
+    await client.query('UPDATE player_states SET traits = $1 WHERE id = $2', [JSON.stringify(traits), row.rows[0].id]);
   }
 }
 
