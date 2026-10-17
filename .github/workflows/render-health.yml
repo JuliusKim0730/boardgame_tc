@@ -14,3 +14,5 @@ jobs:
           done
           r=$(curl -sS -m 120 -X POST -H 'Content-Type: application/json' -d '{"nickname":"healthcheck"}' -w " HTTP %{http_code} time %{time_total}s" https://boardgame-tc.onrender.com/api/rooms 2>&1)
           note "create-room" "$r"
+          r=$(curl -sS -m 60 -X POST -H 'Content-Type: application/json' -d '{}' https://boardgame-tc.onrender.com/api/games/00000000-0000-0000-0000-000000000000/contribute 2>&1)
+          note "new-code-check" "$r"
