@@ -70,3 +70,17 @@
   font-size: 14px;
   margin: 0;
 }
+
+.server-status {
+  margin: -8px 0 16px;
+  font-size: 0.85rem;
+  color: #777;
+}
+
+.server-status.server-ready {
+  color: #2e7d32;
+}
+
+.server-status.server-down {
+  color: #c62828;
+}

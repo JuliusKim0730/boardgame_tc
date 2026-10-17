@@ -7,8 +7,18 @@ const API_BASE = import.meta.env.VITE_API_URL
     ? 'https://boardgame-tc.onrender.com/api'  // 프로덕션: Render 백엔드
     : 'http://localhost:4000/api';  // 개발: 로컬 백엔드 (포트 4000)
 
-console.log('API_BASE:', API_BASE);  // 디버깅용
-console.log('Environment:', import.meta.env.MODE);
+// 무료 서버(Render)·DB(Supabase)가 잠들어 있으면 응답이 오지 않을 수 있으므로 무한 대기하지 않는다.
+// (찬스 카드 상대 선택은 서버에서 최대 60초 기다리므로 그보다 길게)
+axios.defaults.timeout = 90000;
+
+/** 사용자에게 보여줄 에러 메시지 */
+export function errorMessage(err: any, fallback: string): string {
+  if (err?.response?.data?.error) return err.response.data.error;
+  if (err?.code === 'ECONNABORTED' || !err?.response) {
+    return '서버 응답이 없습니다. 무료 서버는 첫 접속 시 깨어나는 데 최대 1분이 걸릴 수 있어요. 잠시 후 다시 시도해 주세요.';
+  }
+  return fallback;
+}
 
 // Axios 인터셉터 - 에러 로깅 강화
 axios.interceptors.response.use(
@@ -37,6 +47,9 @@ axios.interceptors.response.use(
 );
 
 export const api = {
+  // 서버 깨우기 / 상태 확인
+  health: () => axios.get(`${API_BASE}/health`, { timeout: 70000 }),
+
   // 방 관리
   createRoom: (nickname: string) =>
     axios.post(`${API_BASE}/rooms`, { nickname }),
