@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { api } from '../services/api';
+import { useEffect, useState } from 'react';
+import { api, errorMessage } from '../services/api';
 import './LobbyScreen.css';
 
 interface Props {
@@ -12,6 +12,15 @@ function LobbyScreen({ onRoomCreated }: Props) {
   const [roomCode, setRoomCode] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [serverStatus, setServerStatus] = useState<'waking' | 'ready' | 'down'>('waking');
+
+  // 첫 화면에서 미리 서버를 깨워 둔다 (무료 서버 콜드 스타트 대비)
+  useEffect(() => {
+    api
+      .health()
+      .then(() => setServerStatus('ready'))
+      .catch(() => setServerStatus('down'));
+  }, []);
 
   const handleCreateRoom = async () => {
     if (!nickname.trim()) {
@@ -26,12 +35,10 @@ function LobbyScreen({ onRoomCreated }: Props) {
       const response = await api.createRoom(nickname);
       const { roomId, code, userId, playerId } = response.data;
       
-      console.log('방 생성 완료:', { roomId, code, userId, playerId });
-      
       // 대기실로 이동
       onRoomCreated(roomId, code, userId, playerId, true);
     } catch (err: any) {
-      setError(err.response?.data?.error || '방 생성 실패');
+      setError(errorMessage(err, '방 생성 실패'));
     } finally {
       setLoading(false);
     }
@@ -55,7 +62,7 @@ function LobbyScreen({ onRoomCreated }: Props) {
       // 대기실로 이동
       onRoomCreated(roomId, roomCode, userId, playerId, false);
     } catch (err: any) {
-      setError(err.response?.data?.error || '방 참여 실패');
+      setError(errorMessage(err, '방 참여 실패'));
     } finally {
       setLoading(false);
     }
@@ -67,6 +74,11 @@ function LobbyScreen({ onRoomCreated }: Props) {
         <div className="card lobby-card">
           <h1 className="title">🌙 열네 밤의 꿈</h1>
           <p className="subtitle">14일간의 여행 준비 보드게임</p>
+          <p className={`server-status server-${serverStatus}`}>
+            {serverStatus === 'waking' && '⏳ 서버 연결 중... (첫 접속은 최대 1분)'}
+            {serverStatus === 'ready' && '🟢 서버 준비 완료'}
+            {serverStatus === 'down' && '🔴 서버 응답 없음 - 잠시 후 새로고침해 주세요'}
+          </p>
           
           <div className="menu-buttons">
             <button

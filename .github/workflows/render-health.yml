@@ -6,13 +6,13 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: cd backend && npm ci --ignore-scripts
       - run: |
-          note() { echo "::notice title=$1::$(echo "$2" | tr '\n' ' ' | head -c 900)"; }
-          for u in https://boardgame-tc.onrender.com/api/health https://boardgame-backend.onrender.com/api/health; do
-            r=$(curl -sS -m 150 -o body.txt -w "HTTP %{http_code} time %{time_total}s" -D headers.txt "$u" 2>&1)
-            note "$u" "$r | $(head -c 400 body.txt) | $(grep -i 'x-render-routing\|rndr-id' headers.txt | tr -d '\r')"
-          done
-          r=$(curl -sS -m 120 -X POST -H 'Content-Type: application/json' -d '{"nickname":"healthcheck"}' -w " HTTP %{http_code} time %{time_total}s" https://boardgame-tc.onrender.com/api/rooms 2>&1)
-          note "create-room" "$r"
-          r=$(curl -sS -m 60 -X POST -H 'Content-Type: application/json' -d '{}' https://boardgame-tc.onrender.com/api/games/00000000-0000-0000-0000-000000000000/contribute 2>&1)
-          note "new-code-check" "$r"
+          cd backend
+          timeout 900 node scripts/simulate-game.mjs 3 https://boardgame-tc.onrender.com > sim.txt 2>&1 || true
+          echo "::notice title=sim-results::$(sed -n '/=== RESULTS ===/,$p' sim.txt | tr '\n' ' ' | head -c 1500)"
+          echo "::notice title=sim-tail::$(tail -c 1200 sim.txt | tr '\n' ' ')"
